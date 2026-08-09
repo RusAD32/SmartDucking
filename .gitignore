@@ -1,0 +1,35 @@
+# Build systems and generated JUCE projects
+/build/
+/build-*/
+/Builds/
+/out/
+/deploy/
+/JuceLibraryCode/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# Local developer and IDE configuration
+CMakeUserPresets.json
+/.vs/
+/.vscode/
+/.idea/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Products, intermediates, and local archives
+*.vst3/
+*.component/
+*.aaxplugin/
+*.app/
+*.dSYM/
+*.log
+/Source/*.zip
+
+# OS metadata
+.DS_Store
+Thumbs.db

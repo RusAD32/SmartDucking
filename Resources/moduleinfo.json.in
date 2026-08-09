@@ -1,0 +1,52 @@
+{
+  "Name": "Smart Ducking",
+  "Version": "@PROJECT_VERSION@",
+  "Factory Info": {
+    "Vendor": "OnWave",
+    "URL": "https://onwavedub.org",
+    "E-Mail": "",
+    "Flags": {
+      "Unicode": true,
+      "Classes Discardable": false,
+      "Component Non Discardable": false
+    }
+  },
+  "Classes": [
+    {
+      "CID": "ABCDEF019182FAEB4F6E5776536D646B",
+      "Category": "Audio Module Class",
+      "Name": "Smart Ducking (Stereo)",
+      "Vendor": "OnWave",
+      "Version": "@PROJECT_VERSION@",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": ["Fx", "Dynamics"],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": []
+    },
+    {
+      "CID": "ABCDEF019182FAEB4F6E5776536D5372",
+      "Category": "Audio Module Class",
+      "Name": "Smart Ducking (Surround)",
+      "Vendor": "OnWave",
+      "Version": "@PROJECT_VERSION@",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": ["Fx", "Dynamics"],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": []
+    },
+    {
+      "CID": "ABCDEF011234ABCD4F6E5776536D646B",
+      "Category": "Component Controller Class",
+      "Name": "Smart Ducking",
+      "Vendor": "OnWave",
+      "Version": "@PROJECT_VERSION@",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": ["Fx", "Dynamics"],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": []
+    }
+  ]
+}
