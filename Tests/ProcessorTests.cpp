@@ -529,6 +529,10 @@ int main()
     expect (classification.mode == SidechainMode::stereo,
             "decorrelation exits a fast route immediately");
 
+    // Meter and spectrum capture are intentionally disabled when no editor is
+    // open. Enable the same visualisation path that the editor activates so
+    // the following meter assertions test current runtime behaviour.
+    processor.notifyEditorOpened();
     setParameter (processor, smart_ducking::parameter_ids::attackMs, 0.0f);
     setParameter (processor, smart_ducking::parameter_ids::holdMs, 0.0f);
     setParameter (processor, smart_ducking::parameter_ids::duckDepthDb, 10.0f);
@@ -938,22 +942,26 @@ int main()
                 && centreVoiceOnSpectralCentre.rightRatio < 0.75,
             "centre voice spectrally suppresses the extracted main centre before downmix");
 
+    processor.notifyEditorClosed();
+
     std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
     expect (editor != nullptr, "custom editor creation");
 
     if (editor != nullptr)
     {
-        expect (editor->getWidth() == 760, "compact custom editor width");
-        expect (editor->getHeight() == 570, "compact custom editor height");
-        int sliderCount = 0;
-        int comboBoxCount = 0;
-        int toggleButtonCount = 0;
-        int tabbedComponentCount = 0;
-        bool controlsHaveBounds = true;
-        bool toggleButtonsEnabled = true;
-        bool sliderStylesMatchSelectedTab = true;
-        int inspectedTab = 0;
-        juce::TabbedComponent* tabbedComponent = nullptr;
+        expect (editor->getWidth() == 1000, "custom editor default width");
+        expect (editor->getHeight() == 650, "custom editor default height");
+
+        struct VisibleControls
+        {
+            int sliders = 0;
+            int comboBoxes = 0;
+            int toggleButtons = 0;
+            int linearSliders = 0;
+            int tabbedComponents = 0;
+            bool haveBounds = true;
+        };
+
         const auto isEffectivelyVisible = [] (const juce::Component& candidate)
         {
             for (auto* component = &candidate; component != nullptr;
@@ -968,76 +976,108 @@ int main()
 
             return true;
         };
-        std::function<void (juce::Component&)> inspectComponent;
-        inspectComponent = [&] (juce::Component& component)
+
+        const auto inspectVisibleControls = [&] (juce::Component& root)
         {
-            if (auto* slider = dynamic_cast<juce::Slider*> (&component))
+            VisibleControls result;
+            std::function<void (juce::Component&)> inspect;
+            inspect = [&] (juce::Component& component)
             {
                 if (isEffectivelyVisible (component))
                 {
-                    ++sliderCount;
-                    controlsHaveBounds = controlsHaveBounds && ! component.getBounds().isEmpty();
-                    const auto shouldBeLinear = inspectedTab == 2;
-                    sliderStylesMatchSelectedTab = sliderStylesMatchSelectedTab
-                        && ((slider->getSliderStyle() == juce::Slider::LinearHorizontal)
-                            == shouldBeLinear);
+                    if (auto* slider = dynamic_cast<juce::Slider*> (&component))
+                    {
+                        ++result.sliders;
+                        const auto style = slider->getSliderStyle();
+                        result.linearSliders += style == juce::Slider::LinearHorizontal
+                                                    || style == juce::Slider::LinearBar ? 1 : 0;
+                        result.haveBounds = result.haveBounds
+                                         && ! component.getBounds().isEmpty();
+                    }
+
+                    if (dynamic_cast<juce::ComboBox*> (&component) != nullptr)
+                    {
+                        ++result.comboBoxes;
+                        result.haveBounds = result.haveBounds
+                                         && ! component.getBounds().isEmpty();
+                    }
+
+                    if (dynamic_cast<juce::ToggleButton*> (&component) != nullptr)
+                    {
+                        ++result.toggleButtons;
+                        result.haveBounds = result.haveBounds
+                                         && ! component.getBounds().isEmpty();
+                    }
+
+                    if (dynamic_cast<juce::TabbedComponent*> (&component) != nullptr)
+                        ++result.tabbedComponents;
                 }
-            }
 
-            if (dynamic_cast<juce::ComboBox*> (&component) != nullptr)
-            {
-                ++comboBoxCount;
-                controlsHaveBounds = controlsHaveBounds && ! component.getBounds().isEmpty();
-            }
-
-            if (dynamic_cast<juce::ToggleButton*> (&component) != nullptr)
-            {
-                ++toggleButtonCount;
-                controlsHaveBounds = controlsHaveBounds && ! component.getBounds().isEmpty();
-                toggleButtonsEnabled = toggleButtonsEnabled && component.isEnabled();
-            }
-
-            if (dynamic_cast<juce::TabbedComponent*> (&component) != nullptr)
-            {
-                ++tabbedComponentCount;
-                tabbedComponent = dynamic_cast<juce::TabbedComponent*> (&component);
-            }
-
-            for (int child = 0; child < component.getNumChildComponents(); ++child)
-                inspectComponent (*component.getChildComponent (child));
+                for (int child = 0; child < component.getNumChildComponents(); ++child)
+                    inspect (*component.getChildComponent (child));
+            };
+            inspect (root);
+            return result;
         };
-        inspectComponent (*editor);
-        expect (tabbedComponentCount == 1, "custom editor uses one focused tab set");
-        const std::array<int, 3> expectedSlidersPerTab { 6, 6, 9 };
-        const std::array<int, 3> expectedCombosPerTab { 1, 2, 1 };
 
-        if (tabbedComponent != nullptr)
+        const auto findTextButton = [] (juce::Component& root,
+                                        const juce::String& text) -> juce::TextButton*
         {
-            for (int tab = 0; tab < 3; ++tab)
+            std::function<juce::TextButton* (juce::Component&)> find;
+            find = [&] (juce::Component& component) -> juce::TextButton*
             {
-                tabbedComponent->setCurrentTabIndex (tab);
-                inspectedTab = tab;
-                sliderCount = 0;
-                comboBoxCount = 0;
-                toggleButtonCount = 0;
-                tabbedComponentCount = 0;
-                controlsHaveBounds = true;
-                toggleButtonsEnabled = true;
-                sliderStylesMatchSelectedTab = true;
-                inspectComponent (*editor);
-                expect (sliderCount == expectedSlidersPerTab[static_cast<size_t> (tab)],
-                        "custom tab exposes its expected continuous controls");
-                expect (comboBoxCount == expectedCombosPerTab[static_cast<size_t> (tab)],
-                        "persistent format selectors plus the spectral FFT selector are visible");
-                expect (toggleButtonCount == 0,
-                        "Stereo hides the Surround-only VLC, Downmix, and Drop LFE controls");
-                expect (toggleButtonsEnabled,
-                        "mode toggles remain clickable even when their DSP mode is currently inactive");
-                expect (controlsHaveBounds, "all controls on the selected tab have a non-empty layout");
-                expect (sliderStylesMatchSelectedTab,
-                        "matrix uses linear sliders while parameter tabs use rotary controls");
-            }
-        }
+                if (auto* button = dynamic_cast<juce::TextButton*> (&component);
+                    button != nullptr && button->getButtonText() == text)
+                    return button;
+
+                for (int child = 0; child < component.getNumChildComponents(); ++child)
+                    if (auto* result = find (*component.getChildComponent (child)))
+                        return result;
+
+                return nullptr;
+            };
+            return find (root);
+        };
+
+        const auto activate = [&] (const char* buttonText)
+        {
+            auto* button = findTextButton (*editor, buttonText);
+            expect (button != nullptr, buttonText);
+
+            if (button != nullptr && button->onClick)
+                button->onClick();
+        };
+
+        auto visible = inspectVisibleControls (*editor);
+        expect (visible.sliders == 6 && visible.comboBoxes == 1,
+                "Simple mode exposes six essential controls and Voice Format");
+        expect (visible.toggleButtons == 0,
+                "Stereo Simple mode hides Surround-only output controls");
+        expect (visible.linearSliders == 0, "Simple mode uses rotary controls");
+        expect (visible.tabbedComponents == 0,
+                "redesigned editor uses Simple/Advanced pages rather than TabbedComponent");
+        expect (visible.haveBounds, "all visible Simple controls have a non-empty layout");
+
+        activate ("ADVANCED");
+        visible = inspectVisibleControls (*editor);
+        expect (visible.sliders == 5 && visible.comboBoxes == 1,
+                "Advanced Dynamics exposes five controls and Voice Format");
+        expect (visible.linearSliders == 0, "Dynamics uses rotary controls");
+
+        activate ("SPECTRUM");
+        visible = inspectVisibleControls (*editor);
+        expect (visible.sliders == 4 && visible.comboBoxes == 3,
+                "Advanced Spectrum exposes four controls, two selectors, and Voice Format");
+        expect (visible.linearSliders == 0, "Spectrum uses rotary controls");
+
+        activate ("ROUTING");
+        visible = inspectVisibleControls (*editor);
+        expect (visible.sliders == 9 && visible.comboBoxes == 1,
+                "Stereo Routing exposes the active 3 by 3 matrix and Voice Format");
+        expect (visible.linearSliders == 9, "Routing matrix uses linear sliders");
+        expect (visible.haveBounds, "all visible Advanced controls have a non-empty layout");
+
+        activate ("SIMPLE");
         juce::Image snapshot (juce::Image::RGB, editor->getWidth(), editor->getHeight(), true);
         juce::Graphics snapshotGraphics (snapshot);
         editor->paintEntireComponent (snapshotGraphics, true);
@@ -1046,30 +1086,56 @@ int main()
 
     {
         std::unique_ptr<juce::AudioProcessorEditor> surroundEditor (surroundProcessor.createEditor());
-        int formatComboCount = 0;
-        int surroundToggleCount = 0;
-        bool surroundTogglesEnabled = true;
+        int visibleFormatComboCount = 0;
+        int visibleSurroundToggleCount = 0;
+        juce::ToggleButton* downmixButton = nullptr;
+        juce::ToggleButton* dropLfeButton = nullptr;
         std::function<void (juce::Component&)> inspectSurroundEditor;
         inspectSurroundEditor = [&] (juce::Component& component)
         {
-            if (dynamic_cast<juce::ComboBox*> (&component) != nullptr)
-                ++formatComboCount;
-
-            if (dynamic_cast<juce::ToggleButton*> (&component) != nullptr)
+            const auto visible = [&]
             {
-                ++surroundToggleCount;
-                surroundTogglesEnabled = surroundTogglesEnabled && component.isEnabled();
+                for (auto* candidate = &component; candidate != nullptr;
+                     candidate = candidate->getParentComponent())
+                {
+                    if (dynamic_cast<juce::AudioProcessorEditor*> (candidate) != nullptr)
+                        break;
+
+                    if (! candidate->isVisible())
+                        return false;
+                }
+
+                return true;
+            }();
+
+            if (visible && dynamic_cast<juce::ComboBox*> (&component) != nullptr)
+                ++visibleFormatComboCount;
+
+            if (visible)
+            {
+                if (auto* toggle = dynamic_cast<juce::ToggleButton*> (&component))
+                {
+                    ++visibleSurroundToggleCount;
+
+                    if (toggle->getButtonText() == "DOWNMIX")
+                        downmixButton = toggle;
+                    else if (toggle->getButtonText() == "DROP LFE")
+                        dropLfeButton = toggle;
+                }
             }
 
             for (int child = 0; child < component.getNumChildComponents(); ++child)
                 inspectSurroundEditor (*component.getChildComponent (child));
         };
         inspectSurroundEditor (*surroundEditor);
-        expect (formatComboCount == 1,
-                "Surround Ducking tab exposes Voice Format without a Main Format selector");
-        expect (surroundToggleCount == 3,
-                "Surround exposes VLC order, Downmix, and Drop LFE controls");
-        expect (surroundTogglesEnabled, "Surround mode toggles are clickable");
+        expect (visibleFormatComboCount == 1,
+                "Surround Simple mode exposes Voice Format without Main Format");
+        expect (visibleSurroundToggleCount == 2,
+                "Surround header exposes Downmix and Drop LFE; VLC order moved to the meter menu");
+        expect (downmixButton != nullptr && downmixButton->isEnabled(),
+                "Surround Downmix control is clickable");
+        expect (dropLfeButton != nullptr && ! dropLfeButton->isEnabled(),
+                "Drop LFE remains disabled until Downmix is active");
     }
 
     constexpr float savedWeightFrequency = 4200.0f;

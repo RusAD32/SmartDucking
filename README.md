@@ -4,7 +4,7 @@ Smart Ducking is an OnWave VST3 prototype for voice-aware spatial and spectral d
 
 The current `0.2.0` prototype exposes two audio-module classes from one `Smart Ducking.vst3` bundle. `Smart Ducking (Stereo)` has fixed `2 + 6 + 2` buses; `Smart Ducking (Surround)` has fixed `6 + 6 + 6` buses. Both classes use the same processor, DSP, state, and editor sources. Main format follows the selected class, while Voice can be interpreted as Stereo or 5.1 in either class. Stereo sources are decomposed into energy-normalised L/C/R above the Linkwitz–Riley 8th-order crossover; 5.1 sources use direct L/C/R/Ls/Rs components. The Voice components independently control corresponding Variant-A spectral masks, while the adjustable 5×5 matrix calculates spatial wideband gains. LFE is excluded from detection and processing and remains latency-aligned.
 
-The compact custom editor keeps Main/Voice and wideband/spectral Gain Reduction meters visible above three focused tabs: Ducking, Spectral, and Matrix. Meter rows follow the active routing: stereo inputs show L/R, Stereo-class reduction shows its internal L/C/R components, and Surround routing shows L/C/R/Ls/Rs. Voice format is the only format selector. The Surround class additionally exposes VLC Main channel order, forced stereo downmix, and optional LFE removal; these controls are hidden in the Stereo class. The matrix presents Voice rows and Original columns as shared table headers and dynamically displays only the active 3×3, 3×5, 5×3, or 5×5 set of linear percentage sliders. Inactive Lookahead, legacy Voice Drive, and fixed weighting controls are intentionally omitted from the main editor.
+The custom editor keeps Main/Voice and wideband/spectral Gain Reduction meters visible while switching between a focused Simple view and Advanced Dynamics, Spectrum, and Routing pages. Meter rows follow the active routing: stereo inputs show L/R, Stereo-class reduction shows its internal L/C/R components, and Surround routing shows L/C/R/Ls/Rs. Voice format is the only format selector. The Surround class additionally exposes forced stereo downmix and optional LFE removal in its header, while VLC Main channel order is available from the Main meter menu; these controls are hidden in the Stereo class. The matrix presents Voice rows and Original columns as shared table headers and dynamically displays only the active 3×3, 3×5, 5×3, or 5×5 set of linear percentage sliders. Inactive Lookahead, legacy Voice Drive, and fixed weighting controls are intentionally omitted from the main editor.
 
 ## Requirements
 
@@ -27,7 +27,7 @@ The macOS presets clear `LDFLAGS` for the CMake process so a globally selected `
 cmake --preset local
 cmake --build --preset local-release --target SmartDucking_VST3
 cmake --build --preset local-release --target SmartDucking_Standalone
-cmake --build --preset local-release --target SmartDuckingTests
+cmake --build --preset local-release --target SmartDuckingTests SmartDuckingVST3FactoryTests
 ctest --preset local-release
 ```
 
@@ -35,15 +35,15 @@ On macOS, build a fast Apple Silicon Debug bundle or a Universal Release bundle:
 
 ```sh
 cmake --preset macos-debug-arm64
-cmake --build --preset macos-debug-arm64 --target SmartDucking_All
-ctest --preset macos-debug-arm64 -R VST3Factory
+cmake --build --preset macos-debug-arm64 --target SmartDucking_All SmartDuckingTests SmartDuckingVST3FactoryTests
+ctest --preset macos-debug-arm64
 
 cmake --preset macos-release-universal
-cmake --build --preset macos-release-universal --target SmartDucking_All
-ctest --preset macos-release-universal -R VST3Factory
+cmake --build --preset macos-release-universal --target SmartDucking_All SmartDuckingTests SmartDuckingVST3FactoryTests
+ctest --preset macos-release-universal
 ```
 
-The factory test dynamically loads the finished VST3 and verifies both audio-module classes and their bus layouts. The processor/UI expectations have not yet been updated for the current DSP and editor changes, so failures from `SmartDucking.Processor` are currently expected.
+The factory test dynamically loads the finished VST3 and verifies both audio-module classes and their bus layouts. `SmartDucking.Processor` covers the current DSP contract, editor-gated meter capture, and the Simple/Advanced editor with its Dynamics, Spectrum, and Routing pages.
 
 The VST3 bundle is produced under:
 
@@ -117,8 +117,7 @@ Rout = R + 0.707 C + 0.707 Rs + 0.5 LFE
 - [x] Standard and VLC Main 5.1 input orders
 - [x] Forced stereo downmix with optional Drop LFE
 - [ ] Additional fixed lookahead
-- [x] Compact tabbed user interface with a 5×5 matrix editor
-- [ ] Simple / Advanced interface modes
+- [x] Simple / Advanced interface with focused Dynamics, Spectrum, and Routing pages
 
 Third-party attribution and the Apache-2.0 license for the adapted PCE factor are recorded in `THIRD_PARTY_LICENSES.md`; the build copies this file into the VST3 bundle and next to the Standalone executable.
 
