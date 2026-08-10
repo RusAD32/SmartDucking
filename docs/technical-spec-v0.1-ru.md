@@ -212,7 +212,7 @@ Sidechain является очищенной и заранее смикширо
 - hold: 150 ms;
 - release: 200 ms.
 
-Параметр старого Sidechain Pre-Gain сохранён только как скрытый неактивный legacy ID для совместимости состояния и не участвует в DSP.
+Старый Sidechain Pre-Gain удалён из host parameters и DSP. При загрузке старого состояния legacy child безопасно удаляется миграцией, остальные параметры сохраняются.
 
 ## 7. Широкополосный дакинг
 
@@ -340,8 +340,8 @@ Default: `×2 Normal`.
 - Исходная гипотеза: 4× overlap, hop size = FFT size / 4.
 - Анализирующее и синтезирующее окна должны обеспечивать стабильную perfect-reconstruction overlap-add при unity gain.
 - Окончательные window и overlap выбираются после сравнительного теста 2× и 4× по артефактам и CPU.
-- Изменение FFT Resolution пересоздаёт буферы и меняет заявленную задержку.
-- FFT Resolution не предназначен для автоматизации во время воспроизведения.
+- Изменение FFT Resolution переключает заранее выделенную geometry, сбрасывает STFT state и меняет заявленную задержку.
+- FFT Resolution не применяется во время воспроизведения: новое значение остаётся pending до остановки transport или следующего `prepareToPlay`. Если DAW после Stop прекращает `processBlock()` до передачи stopped state, четыре неизменившихся тика таймера 20 Hz (около 200 ms без аудиоколбэков) считаются безопасным признаком остановки.
 
 Задержка 8192 samples у стороннего референсного плагина не принимается как требование: она может включать не только размер FFT, но и lookahead, накопление кадров и иные внутренние стадии.
 
@@ -349,11 +349,13 @@ Default: `×2 Normal`.
 
 - Lookahead регулируется от 0 до 50 ms.
 - Default: 10 ms.
-- Общая задержка определяется алгоритмической задержкой STFT, lookahead и необходимыми внутренними буферами.
+- Main всегда резервирует 50 ms задержки, а Voice задерживается на `50 ms − Lookahead`.
+- Общая заявленная задержка равна алгоритмической задержке STFT плюс фиксированные 50 ms.
 - Плагин сообщает задержку хосту для PDC.
 - Задержка одинакова в состояниях SLEEP, WAKING, ACTIVE и TAIL.
 - Низкая полоса и dry-пути задерживаются до совпадения с обработанной ветвью.
-- Изменение FFT Resolution или lookahead может потребовать обновления PDC.
+- Изменение Lookahead не меняет PDC; sidechain delay tap перемещается со сглаживанием.
+- FFT Resolution применяется безопасно при остановленном transport или следующем `prepareToPlay`, после чего host получает обновлённую PDC.
 - Внутренний sleep никогда не должен менять PDC.
 
 ## 11. Оптимизация при тишине sidechain
@@ -416,8 +418,7 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 | Attack | 0–200 ms | 50 ms | зафиксировано |
 | Hold | 0–500 ms | 150 ms | зафиксировано |
 | Release | 20–1000 ms | 200 ms | зафиксировано |
-| Lookahead | 0–50 ms | 10 ms | предварительный default |
-| Sidechain Pre-Gain | legacy only | — | скрытый, DSP не использует |
+| Lookahead | 0–50 ms | 10 ms | реализовано, постоянный 50 ms PDC reserve |
 | Voice Full | −60…0 dBFS | −30 dBFS | зафиксировано |
 | Spectral Amount | 0–18 dB | 10 dB | предварительный default |
 | Spectral Low | 100–2000 Hz | 150 Hz | зафиксировано |
@@ -484,9 +485,9 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 
 ## 15. Диагностические функции
 
-В компактном интерфейсе v0.1 постоянно отображаются stereo-уровни Main/Voice и независимые L/C/R-индикаторы wideband и spectral gain reduction. Параметры разделены на вкладки Ducking, Spectral и Matrix; общие Attack/Hold/Release отображаются и редактируются на вкладках Ducking и Spectral. Оба набора контролов привязаны к одним и тем же параметрам. Неактивный дополнительный Lookahead и фиксированные weighting-параметры не занимают место в основном редакторе. Matrix использует линейные процентные слайдеры и ASCII-подписи каналов.
+Текущий resizable editor постоянно отображает Main/Voice/Output meters и независимые wideband/spectral gain-reduction meters. Simple содержит Ducking Depth, Spectral Depth, Threshold, Attack, Hold и Release. Crossover, Spectral Low и Spectral High редактируются маркерами анализатора. Advanced разделён на Dynamics, Spectrum и Routing; Lookahead находится в Advanced/Dynamics, а FFT Resolution и `QUALITY / NORMAL` — в Advanced/Spectrum. Matrix использует линейные процентные слайдеры, общие заголовки строк/столбцов и динамические размеры 3×3, 3×5, 5×3 или 5×5.
 
-Для следующей итерации планируется переключатель Simple / Advanced. Simple показывает только Crossover, Duck Depth, Spectral Amount и FFT Resolution. Advanced открывает времена огибающей, Voice Full, границы spectral band и матрицу; weighting-параметры остаются скрытыми до появления практической необходимости.
+Weight Frequency/Gain/Q временно остаются отдельными Advanced/Spectrum controls. Согласованная следующая итерация переносит их на анализатор в виде одной интерактивной parametric-EQ node.
 
 Следующие функции полезны для дальнейшей разработки и настройки, но ещё не утверждены как обязательные элементы пользовательского интерфейса:
 

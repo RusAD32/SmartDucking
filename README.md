@@ -4,7 +4,9 @@ Smart Ducking is an OnWave VST3 prototype for voice-aware spatial and spectral d
 
 The current `0.2.0` prototype exposes two audio-module classes from one `Smart Ducking.vst3` bundle. `Smart Ducking (Stereo)` has fixed `2 + 6 + 2` buses; `Smart Ducking (Surround)` has fixed `6 + 6 + 6` buses. Both classes use the same processor, DSP, state, and editor sources. Main format follows the selected class, while Voice can be interpreted as Stereo or 5.1 in either class. Stereo sources are decomposed into energy-normalised L/C/R above the Linkwitz–Riley 8th-order crossover; 5.1 sources use direct L/C/R/Ls/Rs components. The Voice components independently control corresponding Variant-A spectral masks, while the adjustable 5×5 matrix calculates spatial wideband gains. LFE is excluded from detection and processing and remains latency-aligned.
 
-The custom editor keeps Main/Voice and wideband/spectral Gain Reduction meters visible while switching between a focused Simple view and Advanced Dynamics, Spectrum, and Routing pages. Meter rows follow the active routing: stereo inputs show L/R, Stereo-class reduction shows its internal L/C/R components, and Surround routing shows L/C/R/Ls/Rs. Voice format is the only format selector. The Surround class additionally exposes forced stereo downmix and optional LFE removal in its header, while VLC Main channel order is available from the Main meter menu; these controls are hidden in the Stereo class. The matrix presents Voice rows and Original columns as shared table headers and dynamically displays only the active 3×3, 3×5, 5×3, or 5×5 set of linear percentage sliders. Inactive Lookahead, legacy Voice Drive, and fixed weighting controls are intentionally omitted from the main editor.
+The custom editor keeps Main/Voice and wideband/spectral Gain Reduction meters visible while switching between a focused Simple view and Advanced Dynamics, Spectrum, and Routing pages. Meter rows follow the active routing: stereo inputs show L/R, Stereo-class reduction shows its internal L/C/R components, and Surround routing shows L/C/R/Ls/Rs. Voice format is the only format selector. The Surround class additionally exposes forced stereo downmix and optional LFE removal in its header, while VLC Main channel order is available from the Main meter menu; these controls are hidden in the Stereo class. The matrix presents Voice rows and Original columns as shared table headers and dynamically displays only the active 3×3, 3×5, 5×3, or 5×5 set of linear percentage sliders. Lookahead is available in Advanced Dynamics; the current weighting controls remain in Advanced Spectrum until they are replaced by the planned interactive analyser node.
+
+Lookahead is adjustable from 0 to 50 ms with a 10 ms default. Main reserves the full 50 ms while Voice is delayed by `50 ms - Lookahead`, so the reported latency remains `STFT latency + 50 ms` for every Lookahead value. `NORMAL` is the default Processing Mode for new instances. FFT Resolution and Processing Mode changes are queued during playback and applied only through a safe stopped/prepare configuration path instead of resetting DSP state in the audio callback.
 
 ## Requirements
 
@@ -116,11 +118,14 @@ Rout = R + 0.707 C + 0.707 Rs + 0.5 LFE
 - [x] Adjustable 5×5 wideband ducking matrix with maximum aggregation
 - [x] Standard and VLC Main 5.1 input orders
 - [x] Forced stereo downmix with optional Drop LFE
-- [ ] Additional fixed lookahead
+- [x] Adjustable Lookahead with a fixed 50 ms PDC reserve
+- [x] Safe stopped/prepare application of FFT Resolution and Processing Mode
+- [x] Host Processing Mode names aligned to `QUALITY / NORMAL`
+- [x] Obsolete Sidechain Pre-Gain removed with legacy-state migration
 - [x] Simple / Advanced interface with focused Dynamics, Spectrum, and Routing pages
 
 Third-party attribution and the Apache-2.0 license for the adapted PCE factor are recorded in `THIRD_PARTY_LICENSES.md`; the build copies this file into the VST3 bundle and next to the Standalone executable.
 
 ## Diagnostic logs
 
-Diagnostic builds write one tab-separated snapshot log per plugin instance to `%LOCALAPPDATA%\OnWave\SmartDucking`. A low-priority JUCE thread flushes the file every 500 ms. The audio callback performs no file I/O or locking; it only updates atomics. Snapshots contain audio-block/sample counters, sidechain-active blocks, FFT mode and PDC, non-finite output count, current sidechain classifier mode, cumulative Voice FFT/PCE counters, and editor paint/timer counters. Sidechain mode values are `0 silence`, `1 left only`, `2 right only`, `3 dual mono`, `4 stereo`, and `5 surround`. This makes it possible to distinguish a stalled REAPER message thread from a stalled audio callback and to verify fast-path selection during profiling.
+Diagnostic builds write one tab-separated snapshot log per plugin instance to `%LOCALAPPDATA%\OnWave\SmartDucking`. A low-priority JUCE thread flushes the file every 1000 ms. The audio callback performs no file I/O or locking; it only updates atomics. Snapshots contain audio-block/sample counters, sidechain-active blocks, FFT mode and PDC, non-finite output count, current sidechain classifier mode, cumulative Voice FFT/PCE counters, and editor paint/timer counters. Sidechain mode values are `0 silence`, `1 left only`, `2 right only`, `3 dual mono`, `4 stereo`, and `5 surround`. This makes it possible to distinguish a stalled REAPER message thread from a stalled audio callback and to verify fast-path selection during profiling.

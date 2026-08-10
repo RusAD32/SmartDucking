@@ -48,6 +48,25 @@ struct SpatialToneResult
     std::array<double, 6> outputRatios {};
 };
 
+struct ProcessorImpulseResult
+{
+    int latency = 0;
+    float maximumBeforeLatency = 0.0f;
+    float sampleAtLatency = 0.0f;
+};
+
+struct TestPlayHead final : juce::AudioPlayHead
+{
+    juce::Optional<PositionInfo> getPosition() const override
+    {
+        PositionInfo position;
+        position.setIsPlaying (isPlaying);
+        return position;
+    }
+
+    bool isPlaying = false;
+};
+
 ToneResult processTone (SmartDuckingAudioProcessor& processor,
                         double frequencyHz,
                         float sidechainLeft,
@@ -183,6 +202,85 @@ SpatialToneResult processSpatialTone (SmartDuckingAudioProcessor& processor,
 
     return result;
 }
+
+ProcessorImpulseResult processImpulseWithLookahead (float lookaheadMs,
+                                                     double sampleRate = 48000.0)
+{
+    SmartDuckingAudioProcessor processor;
+    setParameter (processor, smart_ducking::parameter_ids::processingMode, 1.0f);
+    setParameter (processor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+    setParameter (processor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+    setParameter (processor, smart_ducking::parameter_ids::lookaheadMs, lookaheadMs);
+    processor.prepareToPlay (sampleRate, 1);
+
+    ProcessorImpulseResult result;
+    result.latency = processor.getLatencySamples();
+    juce::AudioBuffer<float> buffer (8, 1);
+    juce::MidiBuffer midi;
+
+    for (int sample = 0; sample <= result.latency; ++sample)
+    {
+        buffer.clear();
+        buffer.setSample (0, 0, sample == 0 ? 1.0f : 0.0f);
+        processor.processBlock (buffer, midi);
+        const auto output = buffer.getSample (0, 0);
+
+        if (sample < result.latency)
+            result.maximumBeforeLatency = juce::jmax (result.maximumBeforeLatency,
+                                                       std::abs (output));
+        else
+            result.sampleAtLatency = output;
+    }
+
+    return result;
+}
+
+int findWidebandOnsetSample (float lookaheadMs)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 64;
+    constexpr int voiceStartSample = 4096;
+    constexpr int totalSamples = 12288;
+    SmartDuckingAudioProcessor processor;
+    setParameter (processor, smart_ducking::parameter_ids::processingMode, 1.0f);
+    setParameter (processor, smart_ducking::parameter_ids::fftResolution, 0.0f);
+    setParameter (processor, smart_ducking::parameter_ids::attackMs, 0.0f);
+    setParameter (processor, smart_ducking::parameter_ids::holdMs, 0.0f);
+    setParameter (processor, smart_ducking::parameter_ids::duckDepthDb, 15.0f);
+    setParameter (processor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+    setParameter (processor, smart_ducking::parameter_ids::lookaheadMs, lookaheadMs);
+    processor.prepareToPlay (sampleRate, blockSize);
+    processor.notifyEditorOpened();
+
+    juce::AudioBuffer<float> buffer (8, blockSize);
+    juce::MidiBuffer midi;
+    auto onset = -1;
+
+    for (int processed = 0; processed < totalSamples && onset < 0; processed += blockSize)
+    {
+        buffer.clear();
+
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            buffer.setSample (0, sample, 0.25f);
+            buffer.setSample (1, sample, 0.25f);
+
+            if (processed + sample >= voiceStartSample)
+            {
+                buffer.setSample (2, sample, 1.0f);
+                buffer.setSample (3, sample, 1.0f);
+            }
+        }
+
+        processor.processBlock (buffer, midi);
+
+        if (processor.getGainReductionCentreDb() > 5.0f)
+            onset = processed + blockSize;
+    }
+
+    processor.notifyEditorClosed();
+    return onset;
+}
 } // namespace
 
 int main()
@@ -234,8 +332,108 @@ int main()
                 *state.getRawParameterValue (smart_ducking::parameter_ids::activityThresholdDb),
                 -30.0f),
             "voice full threshold default");
+    expect (approximatelyEqual (
+                *state.getRawParameterValue (smart_ducking::parameter_ids::lookaheadMs),
+                10.0f),
+            "lookahead default");
+    expect (approximatelyEqual (
+                *state.getRawParameterValue (smart_ducking::parameter_ids::processingMode),
+                1.0f),
+            "NORMAL processing mode default");
     expect (state.getParameter (smart_ducking::parameter_ids::mainFormat) == nullptr,
             "Main Format is fixed by plugin variant rather than exposed as a parameter");
+    expect (state.getParameter ("sidechainPreGainDb") == nullptr,
+            "legacy Sidechain Pre-Gain is no longer exposed to the host");
+
+    if (const auto* processingMode = state.getParameter (
+            smart_ducking::parameter_ids::processingMode))
+    {
+        const auto choices = processingMode->getAllValueStrings();
+        expect (choices.size() == 2 && choices[0] == "QUALITY" && choices[1] == "NORMAL",
+                "host Processing Mode choices match the custom editor names");
+    }
+    else
+    {
+        expect (false, "Processing Mode parameter exists");
+    }
+
+    {
+        const auto zeroLookaheadImpulse = processImpulseWithLookahead (0.0f);
+        const auto defaultLookaheadImpulse = processImpulseWithLookahead (10.0f);
+        const auto maximumLookaheadImpulse = processImpulseWithLookahead (50.0f);
+        const auto fortyFourOneImpulse = processImpulseWithLookahead (10.0f, 44100.0);
+        const auto ninetySixImpulse = processImpulseWithLookahead (10.0f, 96000.0);
+        constexpr int expectedLatency = 2048 + 2400;
+
+        expect (zeroLookaheadImpulse.latency == expectedLatency
+                    && defaultLookaheadImpulse.latency == expectedLatency
+                    && maximumLookaheadImpulse.latency == expectedLatency,
+                "Lookahead uses a fixed 50 ms PDC reserve at 48 kHz");
+        expect (fortyFourOneImpulse.latency == 2048 + 2205
+                    && ninetySixImpulse.latency == 4096 + 4800,
+                "reported PDC follows STFT geometry plus 50 ms at 44.1 and 96 kHz");
+        expect (zeroLookaheadImpulse.maximumBeforeLatency < 1.0e-6f
+                    && defaultLookaheadImpulse.maximumBeforeLatency < 1.0e-6f
+                    && maximumLookaheadImpulse.maximumBeforeLatency < 1.0e-6f,
+                "processor emits no Main signal before fixed reported latency");
+        expect (approximatelyEqual (zeroLookaheadImpulse.sampleAtLatency, 1.0f, 0.002f)
+                    && approximatelyEqual (defaultLookaheadImpulse.sampleAtLatency,
+                                           1.0f,
+                                           0.002f)
+                    && approximatelyEqual (maximumLookaheadImpulse.sampleAtLatency,
+                                           1.0f,
+                                           0.002f),
+                "fixed Lookahead reserve reconstructs an impulse at reported latency");
+        expect (fortyFourOneImpulse.maximumBeforeLatency < 1.0e-6f
+                    && ninetySixImpulse.maximumBeforeLatency < 1.0e-6f
+                    && approximatelyEqual (fortyFourOneImpulse.sampleAtLatency,
+                                           1.0f,
+                                           0.002f)
+                    && approximatelyEqual (ninetySixImpulse.sampleAtLatency,
+                                           1.0f,
+                                           0.002f),
+                "fixed Lookahead reserve reconstructs correctly at 44.1 and 96 kHz");
+
+        const auto zeroLookaheadOnset = findWidebandOnsetSample (0.0f);
+        const auto maximumLookaheadOnset = findWidebandOnsetSample (50.0f);
+        expect (zeroLookaheadOnset > 0 && maximumLookaheadOnset > 0,
+                "wideband onset is detected at both Lookahead extremes");
+        expect (std::abs ((zeroLookaheadOnset - maximumLookaheadOnset) - 2400) <= 512,
+                "50 ms Lookahead advances the detector by approximately 2400 samples");
+    }
+
+    {
+        SmartDuckingAudioProcessor configurationProcessor;
+        TestPlayHead playHead;
+        playHead.isPlaying = true;
+        configurationProcessor.setPlayHead (&playHead);
+        configurationProcessor.prepareToPlay (48000.0, 64);
+        juce::AudioBuffer<float> buffer (8, 64);
+        juce::MidiBuffer midi;
+        buffer.clear();
+        configurationProcessor.processBlock (buffer, midi);
+        const auto initialLatency = configurationProcessor.getLatencySamples();
+
+        setParameter (configurationProcessor, smart_ducking::parameter_ids::fftResolution, 0.0f);
+        setParameter (configurationProcessor, smart_ducking::parameter_ids::processingMode, 0.0f);
+        buffer.clear();
+        configurationProcessor.processBlock (buffer, midi);
+        expect (configurationProcessor.hasPendingDspConfiguration(),
+                "FFT and Processing Mode changes remain pending while transport is playing");
+        expect (configurationProcessor.getActiveFftResolutionIndex() == 1
+                    && configurationProcessor.isActiveNormalMode()
+                    && configurationProcessor.getLatencySamples() == initialLatency,
+                "audio callback does not reset DSP geometry or PDC during playback");
+
+        configurationProcessor.prepareToPlay (48000.0, 64);
+        expect (! configurationProcessor.hasPendingDspConfiguration()
+                    && configurationProcessor.getActiveFftResolutionIndex() == 0
+                    && ! configurationProcessor.isActiveNormalMode(),
+                "prepareToPlay safely applies a pending DSP configuration");
+        expect (configurationProcessor.getLatencySamples() == 1024 + 2400,
+                "safe x1 configuration reports STFT plus fixed Lookahead reserve");
+        configurationProcessor.setPlayHead (nullptr);
+    }
 
     {
         SmartDuckingAudioProcessor routingProcessor (smart_ducking::PluginVariant::surround);
@@ -594,11 +792,64 @@ int main()
     expect (approximatelyEqual (static_cast<float> (leftVoiceOnHardRightMain.rightRatio), 1.0f, 0.003f),
             "left voice leaves the extracted main right unchanged at zero matrix weight");
 
+    const auto dryProtectedLow = processTone (processor, 20.0, 0.0f, 0.0f);
     const auto protectedLow = processTone (processor, 20.0, 1.0f, 1.0f);
-    expect (approximatelyEqual (static_cast<float> (protectedLow.leftRatio), 1.0f, 0.005f),
-            "twenty hertz low band is protected on left");
-    expect (approximatelyEqual (static_cast<float> (protectedLow.rightRatio), 1.0f, 0.005f),
-            "twenty hertz low band is protected on right");
+    expect (approximatelyEqual (static_cast<float> (protectedLow.leftRatio),
+                                static_cast<float> (dryProtectedLow.leftRatio),
+                                0.005f),
+            "default NORMAL mode protects the twenty hertz low band on left");
+    expect (approximatelyEqual (static_cast<float> (protectedLow.rightRatio),
+                                static_cast<float> (dryProtectedLow.rightRatio),
+                                0.005f),
+            "default NORMAL mode protects the twenty hertz low band on right");
+
+    {
+        SmartDuckingAudioProcessor normalProcessor;
+        setParameter (normalProcessor, smart_ducking::parameter_ids::processingMode, 1.0f);
+        setParameter (normalProcessor, smart_ducking::parameter_ids::attackMs, 0.0f);
+        setParameter (normalProcessor, smart_ducking::parameter_ids::holdMs, 0.0f);
+        setParameter (normalProcessor, smart_ducking::parameter_ids::duckDepthDb, 10.0f);
+        setParameter (normalProcessor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+
+        const auto normalDryHigh = processTone (normalProcessor, 1000.0, 0.0f, 0.0f);
+        expect (approximatelyEqual (static_cast<float> (normalDryHigh.leftRatio), 1.0f, 0.003f)
+                    && approximatelyEqual (static_cast<float> (normalDryHigh.rightRatio),
+                                           1.0f,
+                                           0.003f),
+                "NORMAL reconstructs dry high-band stereo without level change");
+
+        const auto normalDuckedHigh = processTone (normalProcessor, 1000.0, 1.0f, 1.0f);
+        expect (approximatelyEqual (static_cast<float> (normalDuckedHigh.leftRatio),
+                                    tenDecibelGain,
+                                    0.006f)
+                    && approximatelyEqual (static_cast<float> (normalDuckedHigh.rightRatio),
+                                           tenDecibelGain,
+                                           0.006f),
+                "NORMAL applies the full centre wideband depth above crossover");
+
+        const auto normalDryLow = processTone (normalProcessor, 20.0, 0.0f, 0.0f);
+        const auto normalProtectedLow = processTone (normalProcessor, 20.0, 1.0f, 1.0f);
+        const auto normalLowIsProtected = approximatelyEqual (
+                                              static_cast<float> (normalProtectedLow.leftRatio),
+                                              static_cast<float> (normalDryLow.leftRatio),
+                                              0.003f)
+                                       && approximatelyEqual (
+                                              static_cast<float> (normalProtectedLow.rightRatio),
+                                              static_cast<float> (normalDryLow.rightRatio),
+                                              0.003f);
+        if (! normalLowIsProtected)
+            std::cerr << "NORMAL dry/protected-low ratios: " << normalDryLow.leftRatio
+                      << "/" << normalProtectedLow.leftRatio << ", "
+                      << normalDryLow.rightRatio << "/" << normalProtectedLow.rightRatio << '\n';
+        expect (normalLowIsProtected,
+                "NORMAL protects the low band from wideband ducking");
+
+        setParameter (normalProcessor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+        setParameter (normalProcessor, smart_ducking::parameter_ids::spectralAmountDb, 10.0f);
+        const auto normalSpectral = processTone (normalProcessor, 3000.0, 1.0f, 1.0f);
+        expect (normalSpectral.leftRatio < 0.75 && normalSpectral.rightRatio < 0.75,
+                "NORMAL applies direct spectral suppression above crossover");
+    }
 
     expect (processor.getMainInputPeakLeft() > 0.49f, "left main meter");
     expect (processor.getMainInputPeakRight() > 0.49f, "right main meter");
@@ -607,42 +858,49 @@ int main()
     expect (approximatelyEqual (processor.getGainReductionLeftDb(), 1.0f, 1.0e-4f), "left GR meter");
     expect (approximatelyEqual (processor.getGainReductionCentreDb(), 10.0f, 1.0e-4f), "centre GR meter");
     expect (approximatelyEqual (processor.getGainReductionRightDb(), 1.0f, 1.0e-4f), "right GR meter");
-    expect (processor.getLatencySamples() == 2048, "x2 STFT reports 2048 samples of latency at 48 kHz");
+    expect (processor.getLatencySamples() == 2048 + 2400,
+            "x2 processor reports STFT plus fixed 50 ms Lookahead reserve at 48 kHz");
 
-    for (int resolution = 0; resolution < 3; ++resolution)
+    for (int economyMode = 0; economyMode < 2; ++economyMode)
     {
-        smart_ducking::StereoSpectralLcrProcessor suppressor;
-        suppressor.prepare (48000.0);
-        suppressor.setResolutionIndex (resolution);
-        auto spectralParameters = smart_ducking::StereoSpectralLcrProcessor::Parameters {};
-        spectralParameters.amountDb = 0.0f;
-        suppressor.setParameters (spectralParameters);
-
-        const auto latency = 1024 << resolution;
-        float maximumBeforeLatency = 0.0f;
-        float reconstructedImpulse = 0.0f;
-
-        for (int sample = 0; sample <= latency; ++sample)
+        for (int resolution = 0; resolution < 3; ++resolution)
         {
-            const auto output = suppressor.processSample (sample == 0 ? 1.0f : 0.0f,
-                                                          0.0f,
-                                                          0.0f,
-                                                          0.0f);
-            const auto outputSample = output.left
-                                    + smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
-                                          * output.centre;
+            smart_ducking::StereoSpectralLcrProcessor suppressor;
+            suppressor.prepare (48000.0);
+            suppressor.setEconomyMode (economyMode != 0);
+            suppressor.setResolutionIndex (resolution);
+            auto spectralParameters = smart_ducking::StereoSpectralLcrProcessor::Parameters {};
+            spectralParameters.amountDb = 0.0f;
+            suppressor.setParameters (spectralParameters);
 
-            if (sample < latency)
-                maximumBeforeLatency = juce::jmax (maximumBeforeLatency, std::abs (outputSample));
-            else
-                reconstructedImpulse = outputSample;
+            const auto latency = 1024 << resolution;
+            float maximumBeforeLatency = 0.0f;
+            float reconstructedImpulse = 0.0f;
+
+            for (int sample = 0; sample <= latency; ++sample)
+            {
+                const auto output = suppressor.processSample (sample == 0 ? 1.0f : 0.0f,
+                                                              0.0f,
+                                                              0.0f,
+                                                              0.0f);
+                const auto outputSample = output.left
+                                        + smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
+                                              * output.centre;
+
+                if (sample < latency)
+                    maximumBeforeLatency = juce::jmax (maximumBeforeLatency,
+                                                       std::abs (outputSample));
+                else
+                    reconstructedImpulse = outputSample;
+            }
+
+            expect (maximumBeforeLatency < 1.0e-6f,
+                    "both processing modes emit no signal before reported latency");
+            expect (approximatelyEqual (reconstructedImpulse, 1.0f, 0.002f),
+                    "both processing modes reconstruct an impulse at reported latency");
+            expect (suppressor.getProcessedFftFrameCount() == 0,
+                    "Spectral Amount zero bypasses all FFT work in both processing modes");
         }
-
-        expect (maximumBeforeLatency < 1.0e-6f, "STFT emits no signal before its reported latency");
-        expect (approximatelyEqual (reconstructedImpulse, 1.0f, 0.002f),
-                "STFT reconstructs a unit impulse at its reported latency");
-        expect (suppressor.getProcessedFftFrameCount() == 0,
-                "Spectral Amount zero bypasses all FFT work");
     }
 
     smart_ducking::StereoSpectralLcrProcessor sleepingSuppressor;
@@ -1060,8 +1318,8 @@ int main()
 
         activate ("ADVANCED");
         visible = inspectVisibleControls (*editor);
-        expect (visible.sliders == 5 && visible.comboBoxes == 1,
-                "Advanced Dynamics exposes five controls and Voice Format");
+        expect (visible.sliders == 6 && visible.comboBoxes == 1,
+                "Advanced Dynamics exposes six controls including Lookahead and Voice Format");
         expect (visible.linearSliders == 0, "Dynamics uses rotary controls");
 
         activate ("SPECTRUM");
@@ -1151,6 +1409,76 @@ int main()
                 savedWeightFrequency,
                 0.1f),
             "parameter state round-trip");
+
+    {
+        auto legacyState = processor.getParameterState().copyState();
+        juce::ValueTree legacyParameter { "PARAM" };
+        legacyParameter.setProperty ("id", "sidechainPreGainDb", nullptr);
+        legacyParameter.setProperty ("value", 30.0f, nullptr);
+        legacyState.appendChild (legacyParameter, nullptr);
+        juce::MemoryBlock legacyStateData;
+
+        if (const auto legacyXml = legacyState.createXml())
+            juce::AudioProcessor::copyXmlToBinary (*legacyXml, legacyStateData);
+
+        SmartDuckingAudioProcessor migratedProcessor;
+        migratedProcessor.setStateInformation (legacyStateData.getData(),
+                                                static_cast<int> (legacyStateData.getSize()));
+        const auto migratedState = migratedProcessor.getParameterState().copyState();
+        auto retainedLegacyParameter = false;
+
+        for (const auto& child : migratedState)
+            retainedLegacyParameter = retainedLegacyParameter
+                                   || child.getProperty ("id").toString()
+                                          == "sidechainPreGainDb";
+
+        expect (! retainedLegacyParameter,
+                "state migration removes the obsolete Sidechain Pre-Gain child");
+        expect (approximatelyEqual (
+                    *migratedProcessor.getParameterState().getRawParameterValue (
+                        smart_ducking::parameter_ids::weightFrequencyHz),
+                    savedWeightFrequency,
+                    0.1f),
+                "legacy state migration preserves current parameter values");
+    }
+
+    {
+        const auto loadLegacyProcessingMode = [&] (float legacyModeIndex)
+        {
+            auto legacyState = processor.getParameterState().copyState();
+            auto foundProcessingMode = false;
+
+            for (auto child : legacyState)
+            {
+                if (child.getProperty ("id").toString()
+                    == smart_ducking::parameter_ids::processingMode)
+                {
+                    child.setProperty ("value", legacyModeIndex, nullptr);
+                    foundProcessingMode = true;
+                    break;
+                }
+            }
+
+            expect (foundProcessingMode,
+                    "legacy APVTS state contains the Processing Mode parameter");
+
+            juce::MemoryBlock legacyStateData;
+
+            if (const auto legacyXml = legacyState.createXml())
+                juce::AudioProcessor::copyXmlToBinary (*legacyXml, legacyStateData);
+
+            SmartDuckingAudioProcessor migratedProcessor;
+            migratedProcessor.setStateInformation (legacyStateData.getData(),
+                                                    static_cast<int> (legacyStateData.getSize()));
+            return migratedProcessor.getParameterState().getRawParameterValue (
+                smart_ducking::parameter_ids::processingMode)->load();
+        };
+
+        expect (approximatelyEqual (loadLegacyProcessingMode (0.0f), 0.0f),
+                "legacy Normal index loads as QUALITY");
+        expect (approximatelyEqual (loadLegacyProcessingMode (1.0f), 1.0f),
+                "legacy Economy index loads as NORMAL");
+    }
 
     if (failures == 0)
     {

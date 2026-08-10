@@ -24,12 +24,14 @@ PluginVariant exchangeRequestedPluginVariant (PluginVariant) noexcept;
 [[nodiscard]] PluginVariant getRequestedPluginVariant() noexcept;
 } // namespace smart_ducking
 
-class SmartDuckingAudioProcessor final : public juce::AudioProcessor
+class SmartDuckingAudioProcessor final : public juce::AudioProcessor,
+                                         private juce::AudioProcessorValueTreeState::Listener,
+                                         private juce::Timer
 {
 public:
     explicit SmartDuckingAudioProcessor (
         smart_ducking::PluginVariant = smart_ducking::PluginVariant::stereo);
-    ~SmartDuckingAudioProcessor() override = default;
+    ~SmartDuckingAudioProcessor() override;
 
     void prepareToPlay (double sampleRate, int maximumExpectedSamplesPerBlock) override;
     void releaseResources() override;
@@ -45,6 +47,18 @@ public:
     [[nodiscard]] bool isSurroundVariant() const noexcept
     {
         return variant == smart_ducking::PluginVariant::surround;
+    }
+    [[nodiscard]] bool hasPendingDspConfiguration() const noexcept
+    {
+        return configurationPending.load (std::memory_order_relaxed);
+    }
+    [[nodiscard]] int getActiveFftResolutionIndex() const noexcept
+    {
+        return currentResolutionIndex.load (std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool isActiveNormalMode() const noexcept
+    {
+        return currentEconomyMode.load (std::memory_order_relaxed);
     }
     [[nodiscard]] bool acceptsMidi() const override { return false; }
     [[nodiscard]] bool producesMidi() const override { return false; }
@@ -289,6 +303,12 @@ public:
 
 private:
     static BusesProperties makeBuses (smart_ducking::PluginVariant);
+    void parameterChanged (const juce::String&, float) override;
+    void timerCallback() override;
+    void applyRequestedDspConfiguration();
+    [[nodiscard]] int getTotalLatencySamples() const noexcept;
+    void updateTransportState();
+    static void removeLegacyState (juce::ValueTree&);
 
     const smart_ducking::PluginVariant variant;
     juce::AudioProcessorValueTreeState parameters;
@@ -297,6 +317,7 @@ private:
     std::atomic<float>* attackParameter = nullptr;
     std::atomic<float>* holdParameter = nullptr;
     std::atomic<float>* releaseParameter = nullptr;
+    std::atomic<float>* lookaheadParameter = nullptr;
     std::atomic<float>* activityThresholdParameter = nullptr;
     std::atomic<float>* spectralAmountParameter = nullptr;
     std::atomic<float>* spectralLowParameter = nullptr;
@@ -315,8 +336,23 @@ private:
     smart_ducking::LinkwitzRiley8Crossover crossover;
     smart_ducking::StereoSpectralLcrProcessor spectralLcrProcessor;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> lowBandDelay;
-    int currentResolutionIndex = 1;
-    bool currentEconomyMode = false;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
+        mainLookaheadDelay;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear>
+        sidechainLookaheadDelay;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedSidechainDelaySamples;
+    std::atomic<int> currentResolutionIndex { 1 };
+    std::atomic<bool> currentEconomyMode { true };
+    std::atomic<bool> configurationPending { false };
+    std::atomic<bool> transportIsPlaying { false };
+    std::atomic<bool> transportStateKnown { true };
+    std::atomic<bool> processorPrepared { false };
+    std::atomic<std::uint64_t> processBlockCounter { 0 };
+    std::uint64_t lastTimerProcessBlockCounter = 0;
+    int consecutiveQuiescentTimerTicks = 0;
+    double currentSampleRate = 48000.0;
+    int maximumLookaheadSamples = 0;
 
     std::atomic<float> mainInputPeakLeft { 0.0f };
     std::atomic<float> mainInputPeakRight { 0.0f };

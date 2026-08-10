@@ -130,6 +130,7 @@ Factory:
 
 ```text
 Stereo Main
+  → fixed 50 ms Main delay
   → LR8 crossover
   ├→ low band → STFT-latency delay ───────────────────────────┐
   └→ high band → shared STFT → Main PCE → L/C/R              │
@@ -159,12 +160,15 @@ Surround Main не проходит PCE.
 
 NORMAL использует 2× overlap и complementary FFT-domain crossover weighting. Отдельный time-domain low path для основных каналов не суммируется: low/high protection и gains объединяются в спектральной области. LFE всё равно проходит отдельное выравнивание задержки.
 
+`NORMAL` является default для новых экземпляров. Загрузка состояния не переопределяет сохранённый выбор режима.
+
 В текущем коде внутренний boolean называется `economyMode`, но пользовательское название режима — `NORMAL`. Не распространять старое имя Economy в новый UI или host metadata.
 
 ### 6.4 Voice
 
 ```text
 Voice
+  → delay `50 ms − Lookahead`
   → stereo/surround interpretation
   → sidechain classifier
   → минимально необходимое число forward FFT
@@ -305,15 +309,12 @@ Default matrix:
 - не переименовывать существующий ID ради косметики;
 - display name и choice text можно менять, сохраняя ID и порядок вариантов;
 - не менять порядок choice values без migration;
+- compatibility test фиксирует отображение старых индексов Processing Mode: `Normal` (0) → `QUALITY`, `Economy` (1) → `NORMAL`;
 - новый автоматизируемый control получает отдельный стабильный ID;
 - чисто UI-state не следует превращать в host parameter;
 - после изменения layout тестировать state round-trip и старый REAPER project/preset.
 
-Известные legacy-параметры:
-
-- `lookaheadMs` существует, но пока не участвует в DSP;
-- `sidechainPreGainDb` существует, но устарел и не участвует в DSP;
-- ближайший план активирует Lookahead и удаляет Sidechain Pre-Gain с проверкой миграции.
+Lookahead является активным параметром 0–50 ms. Он меняет задержку Voice внутри постоянного 50 ms reserve и поэтому не меняет PDC. `sidechainPreGainDb` удалён из layout; loader удаляет одноимённый legacy child из старого APVTS state.
 
 Текущий `parameterVersion` равен 1.
 
@@ -332,10 +333,9 @@ Default matrix:
 - VLC mode доступен из меню Main meter;
 - Downmix/Drop LFE видны только в Surround class.
 
-Следующие согласованные изменения описаны в implementation plan:
+Lookahead уже находится в Advanced/Dynamics. Следующие согласованные изменения описаны в implementation plan:
 
 - weighting EQ как одна draggable parametric node;
-- Lookahead в Advanced/Dynamics;
 - единая группа Bypass/Solo/Delta для Crossover/Wideband/Spectral;
 - Crossover Delta слушает защищённый low band, а не математическую разность;
 - SLEEP/ACTIVE вместо простого sidechain-present indicator;
@@ -495,33 +495,31 @@ pluginval будет подключён как отдельный dev/CI executa
 
 ## 14. Известные проблемы на момент handoff
 
-1. FFT Resolution и Processing Mode могут сбрасывать DSP и вызывать `setLatencySamples` из `processBlock`.
-2. NORMAL mode недостаточно покрыт unit-тестами.
-3. Матрица применяется без сглаживания automation changes.
-4. Lookahead parameter не подключён к DSP.
-5. Sidechain Pre-Gain остаётся видимым host-параметром, хотя ничего не делает.
-6. Host choice names `Normal / Economy` расходятся с UI `QUALITY / NORMAL`.
-7. Weight Frequency/Gain/Q занимают отдельные controls вместо ноды анализатора.
-8. Surround Output meter при forced downmix может показывать лишние каналы.
-9. Voice Format, VLC, Downmix и Drop LFE переключаются без transition smoothing.
-10. Simple/Advanced page и часть UI-state не сохраняются между editor instances.
-11. `SpectralSuppressor.h` объединяет слишком много ответственностей.
-12. В editor остаются подтверждённые dead history/components.
-13. README и старая technical spec частично не соответствуют текущему UI и logger interval.
-14. Bypass/Solo/Delta, SLEEP/ACTIVE и L/R Symmetry Link ещё не реализованы.
+Stage A реализован: NORMAL покрыт characterization-тестами, FFT/Processing changes не реконфигурируют DSP в audio callback, host names используют `QUALITY / NORMAL`, Sidechain Pre-Gain удалён с migration test, а Lookahead работает с постоянным 50 ms PDC reserve.
+
+Оставшиеся известные проблемы:
+
+1. Матрица применяется без сглаживания automation changes.
+2. Weight Frequency/Gain/Q занимают отдельные controls вместо ноды анализатора.
+3. Surround Output meter при forced downmix может показывать лишние каналы.
+4. Voice Format, VLC, Downmix и Drop LFE переключаются без transition smoothing.
+5. Simple/Advanced page и часть UI-state не сохраняются между editor instances.
+6. `SpectralSuppressor.h` объединяет слишком много ответственностей.
+7. В editor остаются подтверждённые dead history/components.
+8. Bypass/Solo/Delta, SLEEP/ACTIVE и L/R Symmetry Link ещё не реализованы.
 
 Полное решение и порядок находятся в `implementation-plan-ru.md`.
 
 ## 15. Рекомендуемая точка продолжения
 
-Не начинать с новой крупной UI-функции. Безопасная первая итерация — Stage A из implementation plan:
+Stage A завершён. Следующая функциональная итерация — Stage B из implementation plan:
 
-1. добавить тесты текущего NORMAL mode;
-2. зафиксировать measured latency/reconstruction/low protection;
-3. вынести применение FFT Resolution/Processing Mode из небезопасного audio-thread reset;
-4. переименовать только host choice texts в `QUALITY / NORMAL`, сохранив ID и indices;
-5. удалить Sidechain Pre-Gain с migration test;
-6. затем реализовать Lookahead с постоянной PDC.
+1. ввести три bypass-параметра и взаимоисключающий Monitor Mode;
+2. реализовать Bypass/Solo/Delta для Crossover, Wideband и Spectral;
+3. Crossover Delta должен воспроизводить защищённый low band без LFE;
+4. сохранить PDC во всех monitor modes и добавить click-free transitions;
+5. объединить controls трёх стадий в одну UI-группу;
+6. перевести верхний индикатор на фактический SLEEP/ACTIVE.
 
 После каждого пункта сохранять маленький проверяемый diff. Не смешивать рефакторинг `SpectralSuppressor.h`, изменение звучания и redesign UI в одном коммите.
 
@@ -549,7 +547,7 @@ pluginval будет подключён как отдельный dev/CI executa
 - значение `setLatencySamples()`;
 - текущий FFT Resolution и Processing Mode.
 
-После реализации Lookahead добавить к этому фиксированный 50 ms reserve.
+К STFT latency всегда добавляется реализованный фиксированный 50 ms Lookahead reserve.
 
 ### CPU не падает при тишине sidechain
 

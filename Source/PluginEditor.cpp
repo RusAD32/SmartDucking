@@ -89,6 +89,8 @@ juce::String parameterTooltip (const juce::String& parameterId)
         return "Minimum time the current ducking state is held before release can begin.";
     if (parameterId == releaseMs)
         return "How quickly the original signal returns after sidechain activity ends.";
+    if (parameterId == lookaheadMs)
+        return "How far the voice detector acts ahead of the matching Main audio. Reported latency stays fixed.";
     if (parameterId == spectralAmountDb)
         return "Maximum frequency-selective attenuation driven by the sidechain spectrum.";
     if (parameterId == weightFrequencyHz)
@@ -1620,6 +1622,7 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     addSliderControl (dynamicsPage, dynamicsControls, attackMs, "ATTACK", "ms");
     addSliderControl (dynamicsPage, dynamicsControls, holdMs, "HOLD", "ms");
     addSliderControl (dynamicsPage, dynamicsControls, releaseMs, "RELEASE", "ms");
+    addSliderControl (dynamicsPage, dynamicsControls, lookaheadMs, "LOOKAHEAD", "ms");
 
     addSliderControl (spectrumPage, spectrumControls, spectralAmountDb, "AMOUNT", "dB");
     addSliderControl (spectrumPage, spectrumControls, weightFrequencyHz, "WEIGHT FREQ", "Hz");

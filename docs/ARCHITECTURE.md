@@ -54,6 +54,18 @@ Stereo Voice Sidechain
 
 The Voice spectrum is used only for PCE and broadband detector magnitude, never for voice-matched frequency selection. No Voice inverse FFT is required. A stable classifier selects silence, left-only, right-only, dual-mono, or stereo routing. One-sided and dual-mono fast paths use one Voice forward FFT, bypass the second FFT and Voice PCE, and preserve the existing detector scale; stereo uses two forward FFTs and PCE. Reported latency never changes.
 
+## Lookahead and reported latency
+
+Main is delayed by a fixed 50 ms reserve before crossover/STFT processing. Voice is delayed by `50 ms - Lookahead`, where Lookahead is adjustable from 0 to 50 ms and defaults to 10 ms. This creates the requested relative detector advance while keeping reported latency fixed at:
+
+```text
+reported latency = active STFT size + ceil(0.050 × sample rate)
+```
+
+The sidechain delay tap moves over a short smoothing ramp. Main, protected low, processed high, downmix, and LFE remain aligned for every Lookahead value.
+
+FFT Resolution and Processing Mode parameters have requested and active states. During playback the requested state remains pending. Geometry reset and host PDC notification occur only through a stopped/message-thread configuration path or the next `prepareToPlay`, never directly from `processBlock`. If a DAW stops audio callbacks before reporting the stopped state, four unchanged 20 Hz timer observations (about 200 ms of callback quiescence) provide the stopped fallback.
+
 ## LCR wideband matrix
 
 | Voice ↓ / Main → | L | C | R |
@@ -72,6 +84,7 @@ Multiple detectors are combined with `maximum`, never by summation.
 - Spectral suppression affects only the corresponding L/C/R component after Main PCE.
 - One weighting bell, default 3 kHz, +6 dB, Q 0.8.
 - FFT Resolution: x1 = 1024, x2 = 2048 (default), x4 = 4096 at 44.1/48 kHz.
+- Processing Mode: `NORMAL` is the default for new instances; stored states retain their saved `QUALITY`/`NORMAL` choice.
 - Temporal smoothing stabilises only the normalised Main-derived mask shape. The shared L/C/R Attack/Hold/Release envelope is applied afterwards and is the sole smoothing of audible spectral-duck depth. A waking engine initialises the mask shape immediately.
 
 ## Silence optimization

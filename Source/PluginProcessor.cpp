@@ -3,6 +3,8 @@
 #include "ParameterIds.h"
 #include "PluginEditor.h"
 
+#include <cmath>
+
 namespace
 {
 constexpr int parameterVersion = 1;
@@ -84,6 +86,7 @@ SmartDuckingAudioProcessor::SmartDuckingAudioProcessor (smart_ducking::PluginVar
     attackParameter = parameters.getRawParameterValue (attackMs);
     holdParameter = parameters.getRawParameterValue (holdMs);
     releaseParameter = parameters.getRawParameterValue (releaseMs);
+    lookaheadParameter = parameters.getRawParameterValue (lookaheadMs);
     activityThresholdParameter = parameters.getRawParameterValue (activityThresholdDb);
     spectralAmountParameter = parameters.getRawParameterValue (spectralAmountDb);
     spectralLowParameter = parameters.getRawParameterValue (spectralLowHz);
@@ -118,6 +121,7 @@ SmartDuckingAudioProcessor::SmartDuckingAudioProcessor (smart_ducking::PluginVar
              && attackParameter != nullptr
              && holdParameter != nullptr
              && releaseParameter != nullptr
+             && lookaheadParameter != nullptr
              && activityThresholdParameter != nullptr
              && spectralAmountParameter != nullptr
              && spectralLowParameter != nullptr
@@ -137,6 +141,17 @@ SmartDuckingAudioProcessor::SmartDuckingAudioProcessor (smart_ducking::PluginVar
         return parameter != nullptr;
     }));
 
+    parameters.addParameterListener (fftResolution, this);
+    parameters.addParameterListener (processingMode, this);
+    startTimerHz (20);
+}
+
+SmartDuckingAudioProcessor::~SmartDuckingAudioProcessor()
+{
+    using namespace smart_ducking::parameter_ids;
+    stopTimer();
+    parameters.removeParameterListener (fftResolution, this);
+    parameters.removeParameterListener (processingMode, this);
 }
 
 const juce::String SmartDuckingAudioProcessor::getName() const
@@ -146,12 +161,17 @@ const juce::String SmartDuckingAudioProcessor::getName() const
 
 void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumExpectedSamplesPerBlock)
 {
+    processorPrepared.store (false, std::memory_order_release);
+    currentSampleRate = juce::jmax (1.0, sampleRate);
     crossover.prepare (sampleRate, crossoverParameter->load());
     spectralLcrProcessor.prepare (sampleRate);
-    currentEconomyMode = processingModeParameter->load() >= 0.5f;
-    spectralLcrProcessor.setEconomyMode (currentEconomyMode);
-    currentResolutionIndex = juce::jlimit (0, 2, juce::roundToInt (fftResolutionParameter->load()));
-    spectralLcrProcessor.setResolutionIndex (currentResolutionIndex);
+    const auto useNormalMode = processingModeParameter->load() >= 0.5f;
+    const auto resolutionIndex = juce::jlimit (
+        0, 2, juce::roundToInt (fftResolutionParameter->load()));
+    currentEconomyMode.store (useNormalMode, std::memory_order_relaxed);
+    currentResolutionIndex.store (resolutionIndex, std::memory_order_relaxed);
+    spectralLcrProcessor.setEconomyMode (useNormalMode);
+    spectralLcrProcessor.setResolutionIndex (resolutionIndex);
 
     const auto maximumDelay = spectralLcrProcessor.getMaximumFftSize();
     const juce::dsp::ProcessSpec delaySpec {
@@ -161,14 +181,35 @@ void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumEx
     };
     lowBandDelay.setMaximumDelayInSamples (maximumDelay);
     lowBandDelay.prepare (delaySpec);
-    const auto latency = spectralLcrProcessor.getLatencySamples();
-    lowBandDelay.setDelay (static_cast<float> (latency));
-    setLatencySamples (latency);
+    const auto stftLatency = spectralLcrProcessor.getLatencySamples();
+    lowBandDelay.setDelay (static_cast<float> (stftLatency));
+
+    maximumLookaheadSamples = static_cast<int> (std::ceil (0.050 * currentSampleRate));
+    const auto maximumLookaheadDelay = maximumLookaheadSamples + 2;
+    mainLookaheadDelay.setMaximumDelayInSamples (maximumLookaheadDelay);
+    mainLookaheadDelay.prepare (delaySpec);
+    mainLookaheadDelay.setDelay (static_cast<float> (maximumLookaheadSamples));
+    sidechainLookaheadDelay.setMaximumDelayInSamples (maximumLookaheadDelay);
+    sidechainLookaheadDelay.prepare (delaySpec);
+    const auto requestedLookaheadSamples = juce::jlimit (
+        0.0f,
+        static_cast<float> (maximumLookaheadSamples),
+        static_cast<float> (0.001 * currentSampleRate * lookaheadParameter->load()));
+    const auto initialSidechainDelay = static_cast<float> (maximumLookaheadSamples)
+                                     - requestedLookaheadSamples;
+    sidechainLookaheadDelay.setDelay (initialSidechainDelay);
+    smoothedSidechainDelaySamples.reset (currentSampleRate, 0.020);
+    smoothedSidechainDelaySamples.setCurrentAndTargetValue (initialSidechainDelay);
+
+    const auto totalLatency = getTotalLatencySamples();
+    setLatencySamples (totalLatency);
+    configurationPending.store (false, std::memory_order_release);
+    processorPrepared.store (true, std::memory_order_release);
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
     diagnosticLogger.recordPrepare (sampleRate,
                                     maximumExpectedSamplesPerBlock,
-                                    currentResolutionIndex,
-                                    latency);
+                                    resolutionIndex,
+                                    totalLatency);
 #endif
     mainInputPeakLeft.store (0.0f, std::memory_order_relaxed);
     mainInputPeakRight.store (0.0f, std::memory_order_relaxed);
@@ -202,6 +243,130 @@ void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumEx
 
 void SmartDuckingAudioProcessor::releaseResources()
 {
+    processorPrepared.store (false, std::memory_order_release);
+}
+
+void SmartDuckingAudioProcessor::parameterChanged (const juce::String&, float)
+{
+    configurationPending.store (true, std::memory_order_release);
+}
+
+void SmartDuckingAudioProcessor::updateTransportState()
+{
+    auto stateIsKnown = false;
+    auto isPlaying = false;
+
+    if (const auto* currentPlayHead = getPlayHead())
+    {
+        if (const auto position = currentPlayHead->getPosition())
+        {
+            stateIsKnown = true;
+            isPlaying = position->getIsPlaying();
+        }
+    }
+
+    transportStateKnown.store (stateIsKnown, std::memory_order_release);
+    transportIsPlaying.store (isPlaying, std::memory_order_release);
+
+}
+
+void SmartDuckingAudioProcessor::timerCallback()
+{
+    constexpr auto quiescentTicksRequired = 4;
+    const auto callbackCount = processBlockCounter.load (std::memory_order_acquire);
+
+    if (callbackCount != lastTimerProcessBlockCounter)
+    {
+        lastTimerProcessBlockCounter = callbackCount;
+        consecutiveQuiescentTimerTicks = 0;
+    }
+    else
+    {
+        consecutiveQuiescentTimerTicks = juce::jmin (
+            quiescentTicksRequired, consecutiveQuiescentTimerTicks + 1);
+    }
+
+    if (! processorPrepared.load (std::memory_order_acquire)
+        || ! configurationPending.load (std::memory_order_acquire))
+        return;
+
+    const auto transportStopped = transportStateKnown.load (std::memory_order_acquire)
+                               && ! transportIsPlaying.load (std::memory_order_acquire);
+    const auto audioCallbackIsQuiescent = consecutiveQuiescentTimerTicks
+                                       >= quiescentTicksRequired;
+
+    if (! transportStopped && ! audioCallbackIsQuiescent)
+        return;
+
+    suspendProcessing (true);
+
+    {
+        const juce::ScopedLock lock (getCallbackLock());
+        applyRequestedDspConfiguration();
+    }
+
+    setLatencySamples (getTotalLatencySamples());
+    suspendProcessing (false);
+}
+
+void SmartDuckingAudioProcessor::applyRequestedDspConfiguration()
+{
+    const auto requestedNormalMode = processingModeParameter->load() >= 0.5f;
+    const auto requestedResolution = juce::jlimit (
+        0, 2, juce::roundToInt (fftResolutionParameter->load()));
+    const auto previousNormalMode = currentEconomyMode.load (std::memory_order_relaxed);
+    const auto previousResolution = currentResolutionIndex.load (std::memory_order_relaxed);
+    const auto modeChanged = requestedNormalMode != previousNormalMode;
+    const auto resolutionChanged = requestedResolution != previousResolution;
+
+    if (modeChanged)
+        spectralLcrProcessor.setEconomyMode (requestedNormalMode);
+
+    if (resolutionChanged)
+        spectralLcrProcessor.setResolutionIndex (requestedResolution);
+
+    if (modeChanged || resolutionChanged)
+    {
+        crossover.reset();
+        lowBandDelay.reset();
+        lowBandDelay.setDelay (static_cast<float> (spectralLcrProcessor.getLatencySamples()));
+        currentEconomyMode.store (requestedNormalMode, std::memory_order_relaxed);
+        currentResolutionIndex.store (requestedResolution, std::memory_order_relaxed);
+    }
+
+#if SMART_DUCKING_ENABLE_DIAGNOSTICS
+    if (resolutionChanged)
+        diagnosticLogger.recordResolutionChange (requestedResolution,
+                                                   getTotalLatencySamples());
+#endif
+
+    const auto latestNormalMode = processingModeParameter->load() >= 0.5f;
+    const auto latestResolution = juce::jlimit (
+        0, 2, juce::roundToInt (fftResolutionParameter->load()));
+    configurationPending.store (
+        latestNormalMode != currentEconomyMode.load (std::memory_order_relaxed)
+            || latestResolution != currentResolutionIndex.load (std::memory_order_relaxed),
+        std::memory_order_release);
+}
+
+int SmartDuckingAudioProcessor::getTotalLatencySamples() const noexcept
+{
+    return spectralLcrProcessor.getLatencySamples() + maximumLookaheadSamples;
+}
+
+void SmartDuckingAudioProcessor::removeLegacyState (juce::ValueTree& state)
+{
+    constexpr auto legacySidechainPreGain = "sidechainPreGainDb";
+    state.removeProperty (legacySidechainPreGain, nullptr);
+
+    for (int childIndex = state.getNumChildren(); --childIndex >= 0;)
+    {
+        const auto child = state.getChild (childIndex);
+
+        if (child.hasType ("PARAM")
+            && child.getProperty ("id").toString() == legacySidechainPreGain)
+            state.removeChild (childIndex, nullptr);
+    }
 }
 
 bool SmartDuckingAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -227,10 +392,12 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 #endif
     juce::ScopedNoDenormals noDenormals;
     midiMessages.clear();
+    processBlockCounter.fetch_add (1, std::memory_order_release);
 
     auto mainInput = getBusBuffer (buffer, true, 0);
     auto output = getBusBuffer (buffer, false, 0);
     const auto numSamples = buffer.getNumSamples();
+    updateTransportState();
     const auto sidechainEnabled = getBusCount (true) >= 2 && getBus (true, 1)->isEnabled();
     auto sidechain = sidechainEnabled ? getBusBuffer (buffer, true, 1) : juce::AudioBuffer<float> {};
     const auto mainIsStereo = ! isSurroundVariant();
@@ -263,33 +430,13 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     crossover.setCutoffHz (crossoverParameter->load());
-
-    const auto requestedEconomyMode = processingModeParameter->load() >= 0.5f;
-    const auto requestedResolution = juce::jlimit (0, 2, juce::roundToInt (fftResolutionParameter->load()));
-
-    if (requestedEconomyMode != currentEconomyMode)
-    {
-        currentEconomyMode = requestedEconomyMode;
-        spectralLcrProcessor.setEconomyMode (currentEconomyMode);
-        crossover.reset();
-        lowBandDelay.reset();
-        const auto latency = spectralLcrProcessor.getLatencySamples();
-        lowBandDelay.setDelay (static_cast<float> (latency));
-        setLatencySamples (latency);
-    }
-
-    if (requestedResolution != currentResolutionIndex)
-    {
-        currentResolutionIndex = requestedResolution;
-        spectralLcrProcessor.setResolutionIndex (currentResolutionIndex);
-        lowBandDelay.reset();
-        const auto latency = spectralLcrProcessor.getLatencySamples();
-        lowBandDelay.setDelay (static_cast<float> (latency));
-        setLatencySamples (latency);
-#if SMART_DUCKING_ENABLE_DIAGNOSTICS
-        diagnosticLogger.recordResolutionChange (currentResolutionIndex, latency);
-#endif
-    }
+    const auto useNormalMode = currentEconomyMode.load (std::memory_order_relaxed);
+    const auto requestedLookaheadSamples = juce::jlimit (
+        0.0f,
+        static_cast<float> (maximumLookaheadSamples),
+        static_cast<float> (0.001 * currentSampleRate * lookaheadParameter->load()));
+    smoothedSidechainDelaySamples.setTargetValue (
+        static_cast<float> (maximumLookaheadSamples) - requestedLookaheadSamples);
 
     auto spectralParameters = smart_ducking::StereoSpectralLcrProcessor::Parameters {};
     spectralParameters.amountDb = spectralAmountParameter->load();
@@ -350,47 +497,74 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     for (int sample = 0; sample < numSamples; ++sample)
     {
+        std::array<float, 6> rawMain {};
+        std::array<float, 6> rawVoice {};
+        std::array<float, 6> delayedMain {};
+        std::array<float, 6> delayedVoice {};
+        sidechainLookaheadDelay.setDelay (smoothedSidechainDelaySamples.getNextValue());
+
+        for (int channel = 0; channel < 6; ++channel)
+        {
+            const auto index = static_cast<size_t> (channel);
+            rawMain[index] = readSample (mainRead, channel, sample);
+            rawVoice[index] = readSample (voiceRead, channel, sample);
+            mainLookaheadDelay.pushSample (channel, rawMain[index]);
+            delayedMain[index] = mainLookaheadDelay.popSample (channel);
+            sidechainLookaheadDelay.pushSample (channel, rawVoice[index]);
+            delayedVoice[index] = sidechainLookaheadDelay.popSample (channel);
+        }
+
         smart_ducking::StereoSpectralLcrProcessor::LcrSample mainCanonical;
         smart_ducking::StereoSpectralLcrProcessor::LcrSample voiceCanonical;
+        smart_ducking::StereoSpectralLcrProcessor::LcrSample rawMainCanonical;
+        smart_ducking::StereoSpectralLcrProcessor::LcrSample rawVoiceCanonical;
         float mainLfe = 0.0f;
 
-        if (mainIsStereo)
+        const auto mapMain = [&] (const std::array<float, 6>& source,
+                                  smart_ducking::StereoSpectralLcrProcessor::LcrSample& destination,
+                                  float& lfe) noexcept
         {
-            mainCanonical.left = readSample (mainRead, 0, sample);
-            mainCanonical.right = readSample (mainRead, 1, sample);
-        }
-        else if (useVlcOrder)
-        {
-            mainCanonical.left = readSample (mainRead, 0, sample);
-            mainCanonical.right = readSample (mainRead, 1, sample);
-            mainCanonical.leftSurround = readSample (mainRead, 2, sample);
-            mainCanonical.rightSurround = readSample (mainRead, 3, sample);
-            mainCanonical.centre = readSample (mainRead, 4, sample);
-            mainLfe = readSample (mainRead, 5, sample);
-        }
-        else
-        {
-            mainCanonical.left = readSample (mainRead, 0, sample);
-            mainCanonical.right = readSample (mainRead, 1, sample);
-            mainCanonical.centre = readSample (mainRead, 2, sample);
-            mainLfe = readSample (mainRead, 3, sample);
-            mainCanonical.leftSurround = readSample (mainRead, 4, sample);
-            mainCanonical.rightSurround = readSample (mainRead, 5, sample);
-        }
+            destination.left = source[0];
+            destination.right = source[1];
 
-        if (voiceIsStereo)
+            if (mainIsStereo)
+                return;
+
+            if (useVlcOrder)
+            {
+                destination.leftSurround = source[2];
+                destination.rightSurround = source[3];
+                destination.centre = source[4];
+                lfe = source[5];
+            }
+            else
+            {
+                destination.centre = source[2];
+                lfe = source[3];
+                destination.leftSurround = source[4];
+                destination.rightSurround = source[5];
+            }
+        };
+
+        const auto mapVoice = [&] (const std::array<float, 6>& source,
+                                   smart_ducking::StereoSpectralLcrProcessor::LcrSample& destination) noexcept
         {
-            voiceCanonical.left = readSample (voiceRead, 0, sample);
-            voiceCanonical.right = readSample (voiceRead, 1, sample);
-        }
-        else
-        {
-            voiceCanonical.left = readSample (voiceRead, 0, sample);
-            voiceCanonical.right = readSample (voiceRead, 1, sample);
-            voiceCanonical.centre = readSample (voiceRead, 2, sample);
-            voiceCanonical.leftSurround = readSample (voiceRead, 4, sample);
-            voiceCanonical.rightSurround = readSample (voiceRead, 5, sample);
-        }
+            destination.left = source[0];
+            destination.right = source[1];
+
+            if (! voiceIsStereo)
+            {
+                destination.centre = source[2];
+                destination.leftSurround = source[4];
+                destination.rightSurround = source[5];
+            }
+        };
+
+        float ignoredRawLfe = 0.0f;
+        mapMain (delayedMain, mainCanonical, mainLfe);
+        mapMain (rawMain, rawMainCanonical, ignoredRawLfe);
+        mapVoice (delayedVoice, voiceCanonical);
+        mapVoice (rawVoice, rawVoiceCanonical);
 
         const auto updatePeak = [] (float& maximum, float value) noexcept
         {
@@ -398,20 +572,20 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         };
         if (visualisationActive)
         {
-            updatePeak (maximumMainInputPeaks[0], mainCanonical.left);
-            updatePeak (maximumMainInputPeaks[1], mainCanonical.centre);
-            updatePeak (maximumMainInputPeaks[2], mainCanonical.right);
-            updatePeak (maximumMainInputPeaks[3], mainCanonical.leftSurround);
-            updatePeak (maximumMainInputPeaks[4], mainCanonical.rightSurround);
+            updatePeak (maximumMainInputPeaks[0], rawMainCanonical.left);
+            updatePeak (maximumMainInputPeaks[1], rawMainCanonical.centre);
+            updatePeak (maximumMainInputPeaks[2], rawMainCanonical.right);
+            updatePeak (maximumMainInputPeaks[3], rawMainCanonical.leftSurround);
+            updatePeak (maximumMainInputPeaks[4], rawMainCanonical.rightSurround);
         }
 
         if (collectVoicePeaks)
         {
-            updatePeak (maximumVoiceInputPeaks[0], voiceCanonical.left);
-            updatePeak (maximumVoiceInputPeaks[1], voiceCanonical.centre);
-            updatePeak (maximumVoiceInputPeaks[2], voiceCanonical.right);
-            updatePeak (maximumVoiceInputPeaks[3], voiceCanonical.leftSurround);
-            updatePeak (maximumVoiceInputPeaks[4], voiceCanonical.rightSurround);
+            updatePeak (maximumVoiceInputPeaks[0], rawVoiceCanonical.left);
+            updatePeak (maximumVoiceInputPeaks[1], rawVoiceCanonical.centre);
+            updatePeak (maximumVoiceInputPeaks[2], rawVoiceCanonical.right);
+            updatePeak (maximumVoiceInputPeaks[3], rawVoiceCanonical.leftSurround);
+            updatePeak (maximumVoiceInputPeaks[4], rawVoiceCanonical.rightSurround);
         }
 
         smart_ducking::StereoSpectralLcrProcessor::LcrSample highInput;
@@ -440,7 +614,7 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             }
         };
 
-        if (currentEconomyMode)
+        if (useNormalMode)
         {
             highInput = mainCanonical;
         }
@@ -483,16 +657,16 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         if (mainIsStereo)
         {
-            fullBand.left = (currentEconomyMode ? 0.0f : delayedLow.left) + processedHigh.left
+            fullBand.left = (useNormalMode ? 0.0f : delayedLow.left) + processedHigh.left
                           + smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
                                 * processedHigh.centre;
-            fullBand.right = (currentEconomyMode ? 0.0f : delayedLow.right) + processedHigh.right
+            fullBand.right = (useNormalMode ? 0.0f : delayedLow.right) + processedHigh.right
                            + smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
                                  * processedHigh.centre;
         }
         else
         {
-            const auto lowMix = currentEconomyMode ? 0.0f : 1.0f;
+            const auto lowMix = useNormalMode ? 0.0f : 1.0f;
             fullBand.left = lowMix * delayedLow.left + processedHigh.left;
             fullBand.centre = lowMix * delayedLow.centre + processedHigh.centre;
             fullBand.right = lowMix * delayedLow.right + processedHigh.right;
@@ -637,7 +811,11 @@ void SmartDuckingAudioProcessor::setStateInformation (const void* data, int size
     const auto stateXml = getXmlFromBinary (data, sizeInBytes);
 
     if (stateXml != nullptr && stateXml->hasTagName (parameters.state.getType()))
-        parameters.replaceState (juce::ValueTree::fromXml (*stateXml));
+    {
+        auto restoredState = juce::ValueTree::fromXml (*stateXml);
+        removeLegacyState (restoredState);
+        parameters.replaceState (restoredState);
+    }
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout
@@ -653,7 +831,6 @@ SmartDuckingAudioProcessor::createParameterLayout()
     layout.add (makeFloatParameter (holdMs, "Hold", { 0.0f, 500.0f, 0.1f }, 150.0f, "ms"));
     layout.add (makeFloatParameter (releaseMs, "Release", { 20.0f, 1000.0f, 0.1f, 0.45f }, 200.0f, "ms"));
     layout.add (makeFloatParameter (lookaheadMs, "Lookahead", { 0.0f, 50.0f, 0.1f }, 10.0f, "ms"));
-    layout.add (makeFloatParameter (sidechainPreGainDb, "Sidechain Pre-Gain", { 0.0f, 40.0f, 0.01f }, 30.0f, "dB"));
     layout.add (makeFloatParameter (activityThresholdDb, "Voice Full", { -60.0f, 0.0f, 0.1f }, -30.0f, "dBFS"));
     layout.add (makeFloatParameter (spectralAmountDb, "Spectral Amount", { 0.0f, 18.0f, 0.01f }, 10.0f, "dB"));
     layout.add (makeFloatParameter (spectralLowHz, "Spectral Low", frequencyRange (100.0f, 2000.0f), 150.0f, "Hz"));
@@ -669,8 +846,8 @@ SmartDuckingAudioProcessor::createParameterLayout()
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { processingMode, parameterVersion },
         "Processing Mode",
-        juce::StringArray { "Normal", "Economy" },
-        0));
+        juce::StringArray { "QUALITY", "NORMAL" },
+        1));
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { voiceFormat, parameterVersion },
         "Voice Format",

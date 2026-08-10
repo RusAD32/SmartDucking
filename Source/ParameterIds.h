@@ -8,7 +8,6 @@ inline constexpr auto attackMs = "attackMs";
 inline constexpr auto holdMs = "holdMs";
 inline constexpr auto releaseMs = "releaseMs";
 inline constexpr auto lookaheadMs = "lookaheadMs";
-inline constexpr auto sidechainPreGainDb = "sidechainPreGainDb";
 inline constexpr auto activityThresholdDb = "activityThresholdDb";
 inline constexpr auto spectralAmountDb = "spectralAmountDb";
 inline constexpr auto spectralLowHz = "spectralLowHz";
