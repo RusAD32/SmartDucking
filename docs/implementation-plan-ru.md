@@ -448,9 +448,14 @@ pluginval подключается только как dev/CI-инструмен
 - дополнительный FFT mode 8192 samples при 48 kHz;
 - пользовательские параметры Phantom Center Extraction;
 - альтернативные кривые между −60 dBFS и Voice Full;
-- voice-matched или hybrid spectral ducking;
+- voice-informed make-space или hybrid spectral ducking — подробный scope,
+  safety constraints и исследовательские этапы зафиксированы в
+  [`post-1.0-enhancement-plan-ru.md`](post-1.0-enhancement-plan-ru.md);
 - отдельная spectral adjacency matrix;
 - независимый sleep для каждого пространственного канала без подтверждённой пользы профилированием;
 - SIMD-переписывание до появления измеренного bottleneck.
 
-Отдельная spectral matrix и voice-matched mode не планируются автоматически: они возвращаются в план только при практической потребности и успешном прослушивании прототипа.
+Отдельная spectral matrix не планируется автоматически. Make-space/hybrid
+возвращается в работу только после стабильного 1.0 и начинается со скрытого
+прототипа без новых host parameters; shipping возможен только при успешном
+прослушивании и выполнении критериев post-1.0 плана.

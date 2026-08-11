@@ -8,11 +8,12 @@
 
 1. этот handoff;
 2. [`implementation-plan-ru.md`](implementation-plan-ru.md) — согласованный план дальнейшей разработки;
-3. [`ARCHITECTURE.md`](ARCHITECTURE.md) — снимок текущего DSP signal flow;
-4. [`../README.md`](../README.md) — сборка, identity и краткий статус;
-5. [`technical-spec-v0.1-ru.md`](technical-spec-v0.1-ru.md) — первоначальная подробная спецификация.
+3. [`post-1.0-enhancement-plan-ru.md`](post-1.0-enhancement-plan-ru.md) — утверждённое направление make-space/hybrid после стабильного 1.0, не текущая точка реализации;
+4. [`ARCHITECTURE.md`](ARCHITECTURE.md) — снимок текущего DSP signal flow;
+5. [`../README.md`](../README.md) — сборка, identity и краткий статус;
+6. [`technical-spec-v0.1-ru.md`](technical-spec-v0.1-ru.md) — первоначальная подробная спецификация.
 
-Важно: старая техническая спецификация частично устарела. Для фактического текущего поведения источником истины является код и тесты. Для будущих изменений приоритет имеет `implementation-plan-ru.md`.
+Важно: старая техническая спецификация частично устарела. Для фактического текущего поведения источником истины является код и тесты. До стабильного 1.0 приоритет имеет `implementation-plan-ru.md`; post-1.0 spectral-направление описано отдельно и не должно преждевременно менять текущий release scope.
 
 Перед любой работой:
 
