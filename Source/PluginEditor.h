@@ -60,6 +60,9 @@ private:
     void layoutMatrix();
     void setMonitorMode (smart_ducking::MonitorMode);
     void updateStageButtons();
+    void saveUiState();
+    void restoreUiState();
+    void mirrorMatrixEdit (size_t sourceIndex);
     int getVoiceSpatialChannelCount() const noexcept;
     int getMainSpatialChannelCount() const noexcept;
     void applyMatrixValues (const std::array<float, 25>&);
@@ -126,6 +129,7 @@ private:
     juce::TextButton matrixDiagonalButton { "DIAGONAL" };
     juce::TextButton matrixCentreButton { "CENTRE FOCUS" };
     juce::TextButton matrixResetButton { "RESET" };
+    juce::TextButton matrixSymmetryButton { "L/R LINK" };
 
     std::vector<std::unique_ptr<SliderAttachment>> sliderAttachments;
     std::unique_ptr<ComboBoxAttachment> fftAttachment;
@@ -150,6 +154,7 @@ private:
     bool editorVisualisationActive = true;
     int displayedMatrixRows = 0;
     int displayedMatrixColumns = 0;
+    bool applyingSymmetryEdit = false;
 
     static constexpr int editorWidth = 1000;
     static constexpr int editorHeight = 650;

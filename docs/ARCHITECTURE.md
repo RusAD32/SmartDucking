@@ -76,6 +76,13 @@ FFT Resolution and Processing Mode parameters have requested and active states. 
 
 Multiple detectors are combined with `maximum`, never by summation.
 
+The matrix first produces five final Main target controls. Those five values,
+rather than all 25 coefficients, are smoothed once per STFT frame with a 35 ms
+one-pole transition before wideband gain calculation. Direct spectral controls
+remain independent of the adjacency matrix. `L/R LINK` is an editor-only spatial
+reflection tool for manual changes; it is not a host parameter and never mirrors
+DAW automation.
+
 ## Spectral contract
 
 - Variant A: the sidechain controls activity and amount only.
@@ -96,3 +103,9 @@ Every STFT frame advances the same WOLA state and therefore keeps PDC and audibl
 Three boolean host parameters bypass Crossover, Wideband, and Spectral independently. One choice parameter represents the mutually exclusive Normal/Crossover/Wideband/Spectral Solo and Delta modes. Solo enables only the selected stage. Wideband and Spectral Delta subtract the selected wet result from an STFT-aligned dry Main path. Crossover Delta uses the delayed LR8 low branch in QUALITY and the complementary FFT-domain low curve in NORMAL; LFE is faded out of this monitor path. Stage and monitor gains use 30 ms ramps, while all paths retain the configured STFT plus Lookahead-reserve latency.
 
 The spectral engine publishes its real heavy-path state through a lock-free atomic. It remains ACTIVE through detector hold, release, mask decay, and overlap-add tail, and becomes SLEEP only when the existing dry WOLA fast path is actually selected. GUI polling does not wake the engine.
+
+Voice Stereo/Surround interpretation, standard/VLC Main order, forced downmix,
+and Drop LFE use 30 ms sample ramps. Editor mode, Advanced page, and matrix-link
+choice are stored as non-automatable APVTS root properties. The Output meter
+exposes five spatial channels for normal Surround output and only L/R while
+forced downmix is selected.

@@ -334,12 +334,13 @@ Lookahead является активным параметром 0–50 ms. Он
 - VLC mode доступен из меню Main meter;
 - Downmix/Drop LFE видны только в Surround class.
 
-Lookahead уже находится в Advanced/Dynamics. Единая группа `B / S / Δ` и фактический индикатор `SLEEP / ACTIVE` реализованы в Stage B. Следующие согласованные изменения описаны в implementation plan:
+Lookahead находится в Advanced/Dynamics. Единая группа `B / S / Δ` и фактический индикатор `SLEEP / ACTIVE` реализованы в Stage B. Stage C также завершён:
 
-- weighting EQ как одна draggable parametric node;
-- L/R Symmetry Link матрицы;
+- weighting EQ редактируется одной draggable parametric node без дублирующих rotary controls;
+- `L/R LINK` пространственно отражает только ручные изменения матрицы;
 - Output meter показывает только L/R при forced downmix;
-- сохранение Simple/Advanced/page/link UI-state.
+- Simple/Advanced, выбранная Advanced page и link сохраняются как UI-state;
+- Voice Format, VLC order, Downmix и Drop LFE используют короткие переходы.
 
 ## 11. Сборка на новой машине
 
@@ -493,26 +494,22 @@ pluginval будет подключён как отдельный dev/CI executa
 
 ## 14. Известные проблемы на момент handoff
 
-Stages A и B реализованы: безопасная конфигурация и Lookahead дополнены Bypass/Solo/Delta для трёх стадий, взаимоисключающим Monitor Mode, low-only Crossover Delta без LFE и фактической SLEEP/ACTIVE-индикацией.
+Stages A–C реализованы: безопасная конфигурация и Lookahead дополнены Bypass/Solo/Delta для трёх стадий, взаимоисключающим Monitor Mode, low-only Crossover Delta без LFE, фактической SLEEP/ACTIVE-индикацией, интерактивной weighting-нодой и законченным matrix/routing UI.
 
 Оставшиеся известные проблемы:
 
-1. Матрица применяется без сглаживания automation changes.
-2. Weight Frequency/Gain/Q занимают отдельные controls вместо ноды анализатора.
-3. Surround Output meter при forced downmix может показывать лишние каналы.
-4. Voice Format, VLC, Downmix и Drop LFE переключаются без transition smoothing.
-5. Simple/Advanced page и часть UI-state не сохраняются между editor instances.
-6. `SpectralSuppressor.h` объединяет слишком много ответственностей.
-7. В editor остаются подтверждённые dead history/components.
-8. L/R Symmetry Link ещё не реализован.
+1. `SpectralSuppressor.h` объединяет слишком много ответственностей.
+2. В editor остаются подтверждённые dead history/components.
+3. Внешний pluginval/CI и расширенная release-проверка ещё не подключены.
+4. A/B и factory presets ещё не добавлены.
 
 Полное решение и порядок находятся в `implementation-plan-ru.md`.
 
 ## 15. Рекомендуемая точка продолжения
 
-Stages A и B завершены. Следующая функциональная итерация — Stage C из implementation plan: интерактивная weighting-нода анализатора, сглаживание конечных matrix controls, L/R Symmetry Link, динамический Output meter при downmix и сохранение UI-state.
-
-Не начинать с preset browser, A/B или SIMD до стабилизации Stage C.
+Stages A–C завершены. Следующая итерация — Stage D из implementation plan:
+расширение тестов и pluginval/CI, декомпозиция spectral engine, удаление dead
+code, синхронизация документации и добавление A/B с factory presets.
 
 ## 16. Как диагностировать проблему
 

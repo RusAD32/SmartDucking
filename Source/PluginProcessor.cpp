@@ -232,6 +232,16 @@ void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumEx
     smoothedCrossoverDeltaLfeMute.reset (currentSampleRate, 0.030);
     smoothedCrossoverDeltaLfeMute.setCurrentAndTargetValue (
         initialMonitorMode == smart_ducking::MonitorMode::crossoverDelta ? 1.0f : 0.0f);
+    const auto initialiseRoutingSmoother = [this] (auto& smoother, bool enabled)
+    {
+        smoother.reset (currentSampleRate, 0.030);
+        smoother.setCurrentAndTargetValue (enabled ? 1.0f : 0.0f);
+    };
+    initialiseRoutingSmoother (smoothedVoiceSurroundMix,
+                              voiceFormatParameter->load() >= 0.5f);
+    initialiseRoutingSmoother (smoothedVlcOrderMix, vlcModeParameter->load() >= 0.5f);
+    initialiseRoutingSmoother (smoothedDownmixMix, downmixParameter->load() >= 0.5f);
+    initialiseRoutingSmoother (smoothedDropLfeMix, dropLfeParameter->load() >= 0.5f);
 
     const auto totalLatency = getTotalLatencySamples();
     setLatencySamples (totalLatency);
@@ -436,9 +446,7 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto sidechain = sidechainEnabled ? getBusBuffer (buffer, true, 1) : juce::AudioBuffer<float> {};
     const auto mainIsStereo = ! isSurroundVariant();
     const auto voiceIsStereo = voiceFormatParameter->load() < 0.5f;
-    const auto useVlcOrder = vlcModeParameter->load() >= 0.5f;
     const auto forceDownmix = downmixParameter->load() >= 0.5f;
-    const auto dropLfe = dropLfeParameter->load() >= 0.5f;
     const auto useNormalMode = currentEconomyMode.load (std::memory_order_relaxed);
     const auto monitorMode = static_cast<smart_ducking::MonitorMode> (juce::jlimit (
         0, 6, juce::roundToInt (monitorModeParameter->load())));
@@ -466,6 +474,11 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             ? 1.0f : 0.0f);
     smoothedCrossoverDeltaLfeMute.setTargetValue (
         monitorMode == smart_ducking::MonitorMode::crossoverDelta ? 1.0f : 0.0f);
+    smoothedVoiceSurroundMix.setTargetValue (voiceFormatParameter->load() >= 0.5f
+                                                 ? 1.0f : 0.0f);
+    smoothedVlcOrderMix.setTargetValue (vlcModeParameter->load() >= 0.5f ? 1.0f : 0.0f);
+    smoothedDownmixMix.setTargetValue (forceDownmix ? 1.0f : 0.0f);
+    smoothedDropLfeMix.setTargetValue (dropLfeParameter->load() >= 0.5f ? 1.0f : 0.0f);
     const auto visualisationActive = spectralLcrProcessor.isVisualisationEnabled();
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
     constexpr auto diagnosticsActive = true;
@@ -585,6 +598,10 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         smart_ducking::StereoSpectralLcrProcessor::LcrSample rawVoiceCanonical;
         smart_ducking::StereoSpectralLcrProcessor::LcrSample delayedDryMain;
         float mainLfe = 0.0f;
+        const auto voiceSurroundMix = smoothedVoiceSurroundMix.getNextValue();
+        const auto vlcOrderMix = smoothedVlcOrderMix.getNextValue();
+        const auto downmixMix = mainIsStereo ? 1.0f : smoothedDownmixMix.getNextValue();
+        const auto dropLfeMix = smoothedDropLfeMix.getNextValue();
 
         const auto mapMain = [&] (const std::array<float, 6>& source,
                                   smart_ducking::StereoSpectralLcrProcessor::LcrSample& destination,
@@ -596,20 +613,10 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             if (mainIsStereo)
                 return;
 
-            if (useVlcOrder)
-            {
-                destination.leftSurround = source[2];
-                destination.rightSurround = source[3];
-                destination.centre = source[4];
-                lfe = source[5];
-            }
-            else
-            {
-                destination.centre = source[2];
-                lfe = source[3];
-                destination.leftSurround = source[4];
-                destination.rightSurround = source[5];
-            }
+            destination.centre = source[2] + vlcOrderMix * (source[4] - source[2]);
+            lfe = source[3] + vlcOrderMix * (source[5] - source[3]);
+            destination.leftSurround = source[4] + vlcOrderMix * (source[2] - source[4]);
+            destination.rightSurround = source[5] + vlcOrderMix * (source[3] - source[5]);
         };
 
         const auto mapVoice = [&] (const std::array<float, 6>& source,
@@ -618,12 +625,9 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             destination.left = source[0];
             destination.right = source[1];
 
-            if (! voiceIsStereo)
-            {
-                destination.centre = source[2];
-                destination.leftSurround = source[4];
-                destination.rightSurround = source[5];
-            }
+            destination.centre = voiceSurroundMix * source[2];
+            destination.leftSurround = voiceSurroundMix * source[4];
+            destination.rightSurround = voiceSurroundMix * source[5];
         };
 
         float ignoredRawLfe = 0.0f;
@@ -780,35 +784,38 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             fullBand.rightSurround = lowMix * delayedLow.rightSurround + processedHigh.rightSurround;
         }
 
-        const auto mapOutput = [mainIsStereo, forceDownmix, dropLfe] (
+        const auto mapOutput = [mainIsStereo, downmixMix, dropLfeMix] (
                                    const auto& spatial,
                                    float lfe)
         {
-            std::array<float, 6> values {};
-
-            if (mainIsStereo || forceDownmix)
-            {
-                const auto lfeContribution = (! mainIsStereo && ! dropLfe) ? 0.5f * lfe : 0.0f;
-                values[0] = spatial.left
+            std::array<float, 6> surroundValues { spatial.left,
+                                                  spatial.right,
+                                                  spatial.centre,
+                                                  lfe,
+                                                  spatial.leftSurround,
+                                                  spatial.rightSurround };
+            std::array<float, 6> stereoValues {};
+            const auto lfeContribution = ! mainIsStereo
+                ? 0.5f * lfe * (1.0f - dropLfeMix) : 0.0f;
+            stereoValues[0] = spatial.left
                             + (mainIsStereo ? 0.0f
                                             : smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
                                                   * (spatial.centre + spatial.leftSurround))
                             + lfeContribution;
-                values[1] = spatial.right
+            stereoValues[1] = spatial.right
                             + (mainIsStereo ? 0.0f
                                             : smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
                                                   * (spatial.centre + spatial.rightSurround))
                             + lfeContribution;
-            }
-            else
-            {
-                values = { spatial.left,
-                           spatial.right,
-                           spatial.centre,
-                           lfe,
-                           spatial.leftSurround,
-                           spatial.rightSurround };
-            }
+
+            if (mainIsStereo)
+                return stereoValues;
+
+            std::array<float, 6> values {};
+            for (size_t channel = 0; channel < values.size(); ++channel)
+                values[channel] = surroundValues[channel]
+                                + downmixMix
+                                      * (stereoValues[channel] - surroundValues[channel]);
 
             return values;
         };

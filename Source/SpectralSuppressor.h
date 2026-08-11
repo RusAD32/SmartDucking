@@ -217,6 +217,7 @@ public:
         lastMaximumReductionDb.fill (0.0f);
         lastWidebandReductionDb.fill (0.0f);
         lastLcrPeaks = {};
+        smoothedMatrixControls = {};
         processedFftFrameCount = 0;
         processedOutputFrameCount = 0;
         processedSidechainFftCount = 0;
@@ -849,6 +850,10 @@ private:
             lastMaximumReductionDb.begin(),
             lastMaximumReductionDb.end(),
             [] (float reduction) { return reduction < sleepReductionThresholdDb; });
+        const auto widebandReductionIsFinished = std::all_of (
+            lastWidebandReductionDb.begin(),
+            lastWidebandReductionDb.end(),
+            [] (float reduction) { return reduction < sleepReductionThresholdDb; });
         const auto& window = windows[static_cast<size_t> (resolutionIndex)];
         const auto shouldUpdateVisualisation = shouldUpdateVisualisationThisFrame();
 
@@ -868,7 +873,8 @@ private:
                                        || currentSpectralStageMix > 0.0f;
 
         if ((! sidechainSignalIsPresent && ! envelopeIsActive
-             && spectralReductionIsFinished && ! crossoverDeltaNeedsFft)
+             && spectralReductionIsFinished && widebandReductionIsFinished
+             && ! crossoverDeltaNeedsFft)
             || (! duckingStagesNeedFft && ! crossoverDeltaNeedsFft))
         {
             if (shouldUpdateVisualisation)
@@ -898,6 +904,7 @@ private:
 
                 lastMaximumReductionDb.fill (0.0f);
                 lastWidebandReductionDb.fill (0.0f);
+                smoothedMatrixControls = {};
                 clearPceHistory();
                 heavyPathSleeping = true;
                 heavyPathActive.store (false, std::memory_order_release);
@@ -1027,6 +1034,17 @@ private:
                     detectorTargets.get (channel)));
 
         const auto targetControls = parameters.duckMatrix.apply (voiceControls);
+        const auto matrixSmoothingCoefficient = 1.0f - std::exp (
+            -static_cast<float> (hopSize / sampleRate) / matrixSmoothingSeconds);
+
+        for (int channel = 0; channel < lcrChannels; ++channel)
+        {
+            const auto current = smoothedMatrixControls.get (channel);
+            smoothedMatrixControls.set (
+                channel,
+                current + matrixSmoothingCoefficient
+                              * (targetControls.get (channel) - current));
+        }
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
         diagnosticStageEnd = juce::Time::getHighResolutionTicks();
         diagnosticControlTicks.fetch_add (
@@ -1058,7 +1076,7 @@ private:
                 : fftData[static_cast<size_t> (channel)];
             const auto frameControl = voiceControls.get (channel);
             lastWidebandReductionDb[static_cast<size_t> (channel)] =
-                parameters.duckDepthDb * targetControls.get (channel)
+                parameters.duckDepthDb * smoothedMatrixControls.get (channel)
                     * currentWidebandStageMix;
             const auto combineNormalSpectralAndWideGain = ! economyMode
                 && parameters.amountDb > 0.0f
@@ -1970,6 +1988,7 @@ private:
     static constexpr float sleepControlThreshold = 1.0e-5f;
     static constexpr float sleepReductionThresholdDb = 0.01f;
     static constexpr float stageTransitionSeconds = 0.030f;
+    static constexpr float matrixSmoothingSeconds = 0.035f;
     static constexpr float detectorFloorDb = -60.0f;
     static constexpr float epsilon = 1.0e-12f;
 
@@ -2016,6 +2035,7 @@ private:
     std::array<PceHistory, 2> pceHistories;
     SidechainClassifier sidechainClassifier;
     std::array<SidechainEnvelope, lcrChannels> voiceEnvelopes;
+    LcrDuckMatrix::Controls smoothedMatrixControls;
     std::array<float, lcrChannels> lastMaximumReductionDb {};
     std::array<float, lcrChannels> lastWidebandReductionDb {};
     LcrSample lastLcrPeaks;

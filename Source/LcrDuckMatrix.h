@@ -44,6 +44,22 @@ struct LcrDuckMatrix
 
     static constexpr int numChannels = 5;
 
+    [[nodiscard]] static constexpr int mirroredChannel (int channel) noexcept
+    {
+        constexpr std::array<int, numChannels> mirrors { 2, 1, 0, 4, 3 };
+        return channel >= 0 && channel < numChannels
+            ? mirrors[static_cast<size_t> (channel)]
+            : channel;
+    }
+
+    [[nodiscard]] static constexpr size_t mirroredCoefficientIndex (
+        int voiceChannel,
+        int mainChannel) noexcept
+    {
+        return static_cast<size_t> (mirroredChannel (voiceChannel) * numChannels
+                                   + mirroredChannel (mainChannel));
+    }
+
     // Rows are Voice L/C/R/Ls/Rs; columns are Main L/C/R/Ls/Rs.
     std::array<float, numChannels * numChannels> coefficients {
         1.00f, 0.25f, 0.00f, 0.35f, 0.00f,

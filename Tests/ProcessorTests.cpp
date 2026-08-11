@@ -697,6 +697,92 @@ int main()
     }
 
     {
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 64;
+        constexpr int warmupBlocks = 160;
+        constexpr int settleBlocks = 32;
+        juce::MidiBuffer midi;
+
+        const auto processConstant = [&] (SmartDuckingAudioProcessor& routingProcessor,
+                                          int inputChannel,
+                                          int numBlocks,
+                                          auto&& inspectFirstBlock)
+        {
+            juce::AudioBuffer<float> buffer (12, blockSize);
+
+            for (int block = 0; block < numBlocks; ++block)
+            {
+                buffer.clear();
+                for (int sample = 0; sample < blockSize; ++sample)
+                    buffer.setSample (inputChannel, sample, 1.0f);
+
+                routingProcessor.processBlock (buffer, midi);
+                if (block == 0)
+                    inspectFirstBlock (buffer);
+            }
+
+            return buffer;
+        };
+
+        SmartDuckingAudioProcessor smoothDownmix (smart_ducking::PluginVariant::surround);
+        setParameter (smoothDownmix, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+        setParameter (smoothDownmix, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+        smoothDownmix.prepareToPlay (sampleRate, blockSize);
+        static_cast<void> (processConstant (smoothDownmix, 2, warmupBlocks,
+                                            [] (const auto&) {}));
+        setParameter (smoothDownmix, smart_ducking::parameter_ids::downmix, 1.0f);
+        const auto downmixSettled = processConstant (
+            smoothDownmix, 2, settleBlocks,
+            [&] (const auto& firstBlock)
+            {
+                expect (firstBlock.getSample (0, 0) > 0.0f
+                            && firstBlock.getSample (0, 0) < 0.02f
+                            && firstBlock.getSample (2, 0) > 0.98f,
+                        "Downmix transition starts from the current surround route");
+            });
+        expect (downmixSettled.getSample (0, blockSize - 1) > 0.70f
+                    && std::abs (downmixSettled.getSample (2, blockSize - 1)) < 0.01f,
+                "Downmix transition reaches the stereo route without a one-sample switch");
+
+        SmartDuckingAudioProcessor smoothDropLfe (smart_ducking::PluginVariant::surround);
+        setParameter (smoothDropLfe, smart_ducking::parameter_ids::downmix, 1.0f);
+        setParameter (smoothDropLfe, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+        setParameter (smoothDropLfe, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+        smoothDropLfe.prepareToPlay (sampleRate, blockSize);
+        static_cast<void> (processConstant (smoothDropLfe, 3, warmupBlocks,
+                                            [] (const auto&) {}));
+        setParameter (smoothDropLfe, smart_ducking::parameter_ids::dropLfe, 1.0f);
+        const auto lfeSettled = processConstant (
+            smoothDropLfe, 3, settleBlocks,
+            [&] (const auto& firstBlock)
+            {
+                expect (firstBlock.getSample (0, 0) > 0.48f,
+                        "Drop LFE transition starts from the current LFE contribution");
+            });
+        expect (std::abs (lfeSettled.getSample (0, blockSize - 1)) < 0.01f,
+                "Drop LFE transition reaches silence without a one-sample switch");
+
+        SmartDuckingAudioProcessor smoothVlcOrder (smart_ducking::PluginVariant::surround);
+        setParameter (smoothVlcOrder, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+        setParameter (smoothVlcOrder, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+        smoothVlcOrder.prepareToPlay (sampleRate, blockSize);
+        static_cast<void> (processConstant (smoothVlcOrder, 2, warmupBlocks,
+                                            [] (const auto&) {}));
+        setParameter (smoothVlcOrder, smart_ducking::parameter_ids::vlcMode, 1.0f);
+        const auto vlcSettled = processConstant (
+            smoothVlcOrder, 2, settleBlocks + 64,
+            [&] (const auto& firstBlock)
+            {
+                expect (firstBlock.getSample (2, 0) > 0.98f
+                            && std::abs (firstBlock.getSample (4, 0)) < 0.01f,
+                        "VLC-order transition preserves the latency-aligned current mapping initially");
+            });
+        expect (std::abs (vlcSettled.getSample (2, blockSize - 1)) < 0.01f
+                    && vlcSettled.getSample (4, blockSize - 1) > 0.99f,
+                "VLC-order transition reaches the remapped channel without a one-sample switch");
+    }
+
+    {
         SmartDuckingAudioProcessor lfeProcessor (smart_ducking::PluginVariant::surround);
         setParameter (lfeProcessor, smart_ducking::parameter_ids::voiceFormat, 1.0f);
         setParameter (lfeProcessor, smart_ducking::parameter_ids::attackMs, 0.0f);
@@ -805,6 +891,80 @@ int main()
             "matrix uses maximum detector contribution for original C");
     expect (approximatelyEqual (combinedMatrixControls.right, 0.6f),
             "matrix uses maximum detector contribution for original R");
+
+    for (const auto [rows, columns] : std::array<std::pair<int, int>, 4> {
+             std::pair { 3, 3 }, std::pair { 3, 5 },
+             std::pair { 5, 3 }, std::pair { 5, 5 } })
+    {
+        auto mappingsAreValid = true;
+
+        for (int voice = 0; voice < rows; ++voice)
+            for (int main = 0; main < columns; ++main)
+            {
+                const auto mirrored = smart_ducking::LcrDuckMatrix::mirroredCoefficientIndex (
+                    voice, main);
+                const auto mirroredVoice = static_cast<int> (mirrored / 5);
+                const auto mirroredMain = static_cast<int> (mirrored % 5);
+                const auto roundTrip = smart_ducking::LcrDuckMatrix::mirroredCoefficientIndex (
+                    mirroredVoice, mirroredMain);
+                mappingsAreValid = mappingsAreValid
+                    && mirroredVoice < rows
+                    && mirroredMain < columns
+                    && roundTrip == static_cast<size_t> (voice * 5 + main);
+            }
+
+        expect (mappingsAreValid,
+                "L/R symmetry mapping stays within every active matrix shape and is reversible");
+    }
+
+    expect (smart_ducking::LcrDuckMatrix::mirroredCoefficientIndex (1, 2) == 5
+                && smart_ducking::LcrDuckMatrix::mirroredCoefficientIndex (0, 1) == 11
+                && smart_ducking::LcrDuckMatrix::mirroredCoefficientIndex (0, 3) == 14
+                && smart_ducking::LcrDuckMatrix::mirroredCoefficientIndex (3, 2) == 20,
+            "L/R symmetry follows spatial reflection rather than matrix diagonal reflection");
+
+    {
+        smart_ducking::StereoSpectralLcrProcessor smoothedMatrixProcessor;
+        smoothedMatrixProcessor.prepare (48000.0);
+        smoothedMatrixProcessor.setEconomyMode (true);
+        auto matrixParameters = smart_ducking::StereoSpectralLcrProcessor::Parameters {};
+        matrixParameters.amountDb = 0.0f;
+        matrixParameters.duckDepthDb = 10.0f;
+        matrixParameters.attackMs = 0.0f;
+        matrixParameters.holdMs = 0.0f;
+        matrixParameters.duckMatrix.coefficients.fill (1.0f);
+        smoothedMatrixProcessor.setParameters (matrixParameters);
+
+        for (int sample = 0; sample < 12288; ++sample)
+            static_cast<void> (smoothedMatrixProcessor.processSample (0.25f,
+                                                                      0.25f,
+                                                                      1.0f,
+                                                                      1.0f));
+
+        const auto beforeAutomation = smoothedMatrixProcessor.getLastWidebandReductionDb (0);
+        matrixParameters.duckMatrix.coefficients.fill (0.0f);
+        smoothedMatrixProcessor.setParameters (matrixParameters);
+
+        for (int sample = 0; sample < 1024; ++sample)
+            static_cast<void> (smoothedMatrixProcessor.processSample (0.25f,
+                                                                      0.25f,
+                                                                      1.0f,
+                                                                      1.0f));
+
+        const auto duringAutomation = smoothedMatrixProcessor.getLastWidebandReductionDb (0);
+
+        for (int sample = 0; sample < 16384; ++sample)
+            static_cast<void> (smoothedMatrixProcessor.processSample (0.25f,
+                                                                      0.25f,
+                                                                      1.0f,
+                                                                      1.0f));
+
+        expect (beforeAutomation > 8.0f
+                    && duringAutomation > 0.1f
+                    && duringAutomation < beforeAutomation
+                    && smoothedMatrixProcessor.getLastWidebandReductionDb (0) < 0.1f,
+                "matrix automation smooths final maximum-aggregated controls at frame rate");
+    }
 
     smart_ducking::SidechainEnvelope holdEnvelope;
     holdEnvelope.prepare (1000.0);
@@ -1504,8 +1664,8 @@ int main()
 
         activate ("SPECTRUM");
         visible = inspectVisibleControls (*editor);
-        expect (visible.sliders == 4 && visible.comboBoxes == 3,
-                "Advanced Spectrum exposes four controls, two selectors, and Voice Format");
+        expect (visible.sliders == 1 && visible.comboBoxes == 3,
+                "Advanced Spectrum exposes Amount, two selectors, Voice Format, and the analyser weight node");
         expect (visible.linearSliders == 0, "Spectrum uses rotary controls");
 
         activate ("ROUTING");
@@ -1514,6 +1674,18 @@ int main()
                 "Stereo Routing exposes the active 3 by 3 matrix and Voice Format");
         expect (visible.linearSliders == 9, "Routing matrix uses linear sliders");
         expect (visible.haveBounds, "all visible Advanced controls have a non-empty layout");
+
+        if (auto* symmetry = findTextButton (*editor, "L/R LINK"))
+        {
+            symmetry->setToggleState (true, juce::dontSendNotification);
+
+            if (symmetry->onClick)
+                symmetry->onClick();
+        }
+        else
+        {
+            expect (false, "Routing exposes the L/R symmetry edit link");
+        }
 
         activate ("SIMPLE");
         juce::Image snapshot (juce::Image::RGB, editor->getWidth(), editor->getHeight(), true);
@@ -1574,6 +1746,11 @@ int main()
                 "Surround Downmix control is clickable");
         expect (dropLfeButton != nullptr && ! dropLfeButton->isEnabled(),
                 "Drop LFE remains disabled until Downmix is active");
+        expect (surroundProcessor.getOutputMeterChannelCount() == 5,
+                "Surround Output meter defaults to five spatial channels");
+        setParameter (surroundProcessor, smart_ducking::parameter_ids::downmix, 1.0f);
+        expect (surroundProcessor.getOutputMeterChannelCount() == 2,
+                "Surround Output meter switches to L/R during forced downmix");
     }
 
     constexpr float savedWeightFrequency = 4200.0f;
@@ -1602,6 +1779,13 @@ int main()
                         smart_ducking::parameter_ids::monitorMode),
                     static_cast<float> (smart_ducking::MonitorMode::spectralDelta)),
             "stage bypass and Monitor Mode survive state round-trip");
+    expect (static_cast<int> (restoredProcessor.getParameterState().state.getProperty (
+                "uiEditorMode", -1)) == 0
+                && static_cast<int> (restoredProcessor.getParameterState().state.getProperty (
+                    "uiAdvancedPage", -1)) == 2
+                && static_cast<bool> (restoredProcessor.getParameterState().state.getProperty (
+                    "uiMatrixSymmetryLink", false)),
+            "Simple/Advanced, page, and symmetry-link UI state survive state round-trip");
 
     {
         auto legacyState = processor.getParameterState().copyState();

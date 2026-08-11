@@ -75,6 +75,12 @@ public:
     {
         return spectralLcrProcessor.isHeavyPathActive();
     }
+    [[nodiscard]] int getOutputMeterChannelCount() const noexcept
+    {
+        return ! isSurroundVariant()
+                || (downmixParameter != nullptr && downmixParameter->load() >= 0.5f)
+            ? 2 : 5;
+    }
     [[nodiscard]] bool acceptsMidi() const override { return false; }
     [[nodiscard]] bool producesMidi() const override { return false; }
     [[nodiscard]] bool isMidiEffect() const override { return false; }
@@ -371,6 +377,14 @@ private:
         smoothedQualityCrossoverDeltaMix;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
         smoothedCrossoverDeltaLfeMute;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedVoiceSurroundMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedVlcOrderMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedDownmixMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedDropLfeMix;
     std::atomic<int> currentResolutionIndex { 1 };
     std::atomic<bool> currentEconomyMode { true };
     std::atomic<bool> configurationPending { false };

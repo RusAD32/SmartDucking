@@ -808,6 +808,18 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
         if (! spectrumBounds.contains (event.position))
             return;
 
+        if (isNearWeightNode (event.position, 14.0f))
+        {
+            if (event.mods.isPopupMenu())
+            {
+                resetWeightNode();
+                return;
+            }
+
+            beginWeightNodeDrag (event);
+            return;
+        }
+
         draggedParameter = parameterNear (event.position, 12.0f);
 
         if (event.mods.isPopupMenu())
@@ -828,12 +840,20 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
 
     void mouseDrag (const juce::MouseEvent& event) override
     {
-        if (draggedParameter != nullptr)
+        if (weightNodeDragging)
+            updateWeightNodeDrag (event);
+        else if (draggedParameter != nullptr)
             updateDraggedParameter (event.position.x);
     }
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        if (weightNodeDragging)
+        {
+            endWeightNodeDrag();
+            return;
+        }
+
         if (draggedParameter != nullptr)
         {
             draggedParameter->endChangeGesture();
@@ -847,6 +867,12 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
         {
             draggedParameter->endChangeGesture();
             draggedParameter = nullptr;
+        }
+
+        if (isNearWeightNode (event.position, 14.0f))
+        {
+            resetWeightNode();
+            return;
         }
 
         if (auto* parameter = parameterAtLabel (event.position))
@@ -866,7 +892,12 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
 
     void mouseMove (const juce::MouseEvent& event) override
     {
-        if (auto* parameter = parameterNear (event.position, 10.0f))
+        if (isNearWeightNode (event.position, 12.0f))
+        {
+            setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+            setTooltip ("Weight node: drag for frequency/gain, Shift-drag or mouse wheel for Q, double-click to reset.");
+        }
+        else if (auto* parameter = parameterNear (event.position, 10.0f))
         {
             setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
             setTooltip (tooltipForMarker (*parameter));
@@ -881,6 +912,28 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
     void mouseExit (const juce::MouseEvent&) override
     {
         setMouseCursor (juce::MouseCursor::NormalCursor);
+    }
+
+    void mouseWheelMove (const juce::MouseEvent& event,
+                         const juce::MouseWheelDetails& wheel) override
+    {
+        if (! isNearWeightNode (event.position, 18.0f))
+        {
+            Component::mouseWheelMove (event, wheel);
+            return;
+        }
+
+        if (auto* q = state.getParameter (smart_ducking::parameter_ids::weightQ))
+        {
+            const auto current = q->convertFrom0to1 (q->getValue());
+            const auto next = current + 0.25f * wheel.deltaY;
+            q->beginChangeGesture();
+            q->setValueNotifyingHost (juce::jlimit (0.0f,
+                                                     1.0f,
+                                                     q->convertTo0to1 (next)));
+            q->endChangeGesture();
+            repaint();
+        }
     }
 
 private:
@@ -1278,6 +1331,7 @@ private:
         drawSpectrumPath (inputPath, secondaryTextColour.withAlpha (0.72f), 1.5f);
         drawSpectrumPath (outputPath, backgroundColour.withAlpha (0.84f), 3.4f);
         drawSpectrumPath (outputPath, textColour.withAlpha (0.82f), 1.7f);
+        drawWeightingNode (graphics, bounds);
 
         for (size_t markerIndex = 0; markerIndex < markerParameterIds.size(); ++markerIndex)
         {
@@ -1411,6 +1465,196 @@ private:
         graphics.strokePath (widePath, juce::PathStrokeType (1.5f));
         graphics.setColour (spectralReductionColour);
         graphics.strokePath (spectralPath, juce::PathStrokeType (1.5f));
+    }
+
+    [[nodiscard]] juce::Rectangle<float> weightNodeArea() const noexcept
+    {
+        return spectrumBounds.reduced (24.0f, 34.0f);
+    }
+
+    [[nodiscard]] juce::Point<float> weightNodePosition() const
+    {
+        const auto area = weightNodeArea();
+        const auto* frequency = state.getParameter (
+            smart_ducking::parameter_ids::weightFrequencyHz);
+        const auto* gain = state.getParameter (smart_ducking::parameter_ids::weightGainDb);
+
+        if (frequency == nullptr || gain == nullptr || area.isEmpty())
+            return area.getCentre();
+
+        const auto rawFrequency = frequency->convertFrom0to1 (frequency->getValue());
+        const auto rawGain = gain->convertFrom0to1 (gain->getValue());
+        return { frequencyToX (rawFrequency, spectrumBounds),
+                 area.getBottom() - gain->convertTo0to1 (rawGain) * area.getHeight() };
+    }
+
+    [[nodiscard]] bool isNearWeightNode (juce::Point<float> position,
+                                         float radius) const
+    {
+        return position.getDistanceFrom (weightNodePosition()) <= radius;
+    }
+
+    void drawWeightingNode (juce::Graphics& graphics,
+                            juce::Rectangle<float> bounds)
+    {
+        const auto* frequency = state.getParameter (
+            smart_ducking::parameter_ids::weightFrequencyHz);
+        const auto* gain = state.getParameter (smart_ducking::parameter_ids::weightGainDb);
+        const auto* q = state.getParameter (smart_ducking::parameter_ids::weightQ);
+
+        if (frequency == nullptr || gain == nullptr || q == nullptr)
+            return;
+
+        const auto rawFrequency = frequency->convertFrom0to1 (frequency->getValue());
+        const auto rawGain = gain->convertFrom0to1 (gain->getValue());
+        const auto rawQ = q->convertFrom0to1 (q->getValue());
+        const auto area = weightNodeArea();
+        const auto baseline = area.getBottom();
+        const auto gainHeight = area.getHeight() * gain->convertTo0to1 (rawGain);
+        const auto sigmaOctaves = 1.0f / juce::jmax (0.2f, 2.0f * rawQ);
+        juce::Path curve;
+
+        constexpr int points = 96;
+        for (int point = 0; point < points; ++point)
+        {
+            const auto normal = static_cast<float> (point) / static_cast<float> (points - 1);
+            const auto frequencyAtPoint = 20.0f
+                * std::pow (getNyquist() / 20.0f, normal);
+            const auto distance = std::log2 (frequencyAtPoint / rawFrequency);
+            const auto bell = std::exp (-0.5f * distance * distance
+                                        / (sigmaOctaves * sigmaOctaves));
+            const auto x = bounds.getX() + normal * bounds.getWidth();
+            const auto y = baseline - gainHeight * bell;
+
+            if (point == 0)
+                curve.startNewSubPath (x, y);
+            else
+                curve.lineTo (x, y);
+        }
+
+        graphics.setColour (voiceColour.withAlpha (0.18f));
+        graphics.strokePath (curve, juce::PathStrokeType (4.0f,
+                                                          juce::PathStrokeType::curved,
+                                                          juce::PathStrokeType::rounded));
+        graphics.setColour (voiceColour.withAlpha (0.82f));
+        graphics.strokePath (curve, juce::PathStrokeType (1.4f,
+                                                          juce::PathStrokeType::curved,
+                                                          juce::PathStrokeType::rounded));
+
+        const auto node = weightNodePosition();
+        const auto handle = juce::Rectangle<float> (14.0f, 14.0f).withCentre (node);
+        graphics.setColour (backgroundSoftColour);
+        graphics.fillEllipse (handle);
+        graphics.setColour (voiceColour);
+        graphics.fillEllipse (handle.reduced (3.0f));
+        graphics.drawEllipse (handle, 1.5f);
+
+        auto label = juce::Rectangle<float> (node.x - 88.0f,
+                                             node.y - 28.0f,
+                                             176.0f,
+                                             18.0f);
+        label.setX (juce::jlimit (bounds.getX(),
+                                  bounds.getRight() - label.getWidth(),
+                                  label.getX()));
+        graphics.setColour (voiceColour.withAlpha (0.88f));
+        graphics.setFont (juce::FontOptions { 9.5f, juce::Font::bold });
+        graphics.drawText ("WEIGHT  " + frequencyText (rawFrequency)
+                               + "  " + juce::String (rawGain, 1) + " dB"
+                               + "  Q " + juce::String (rawQ, 2),
+                           label,
+                           juce::Justification::centred);
+    }
+
+    void beginWeightNodeDrag (const juce::MouseEvent& event)
+    {
+        auto* frequency = state.getParameter (
+            smart_ducking::parameter_ids::weightFrequencyHz);
+        auto* gain = state.getParameter (smart_ducking::parameter_ids::weightGainDb);
+        auto* q = state.getParameter (smart_ducking::parameter_ids::weightQ);
+
+        if (frequency == nullptr || gain == nullptr || q == nullptr)
+            return;
+
+        weightNodeDragging = true;
+        weightDragAdjustsQ = event.mods.isShiftDown();
+        weightDragStartY = event.position.y;
+        weightDragStartQ = q->convertFrom0to1 (q->getValue());
+        frequency->beginChangeGesture();
+        gain->beginChangeGesture();
+        q->beginChangeGesture();
+        updateWeightNodeDrag (event);
+    }
+
+    void updateWeightNodeDrag (const juce::MouseEvent& event)
+    {
+        auto* frequency = state.getParameter (
+            smart_ducking::parameter_ids::weightFrequencyHz);
+        auto* gain = state.getParameter (smart_ducking::parameter_ids::weightGainDb);
+        auto* q = state.getParameter (smart_ducking::parameter_ids::weightQ);
+
+        if (! weightNodeDragging || frequency == nullptr || gain == nullptr || q == nullptr)
+            return;
+
+        if (weightDragAdjustsQ)
+        {
+            const auto qRange = q->convertFrom0to1 (1.0f) - q->convertFrom0to1 (0.0f);
+            const auto nextQ = weightDragStartQ
+                             + (weightDragStartY - event.position.y)
+                                   * qRange / juce::jmax (40.0f, weightNodeArea().getHeight());
+            q->setValueNotifyingHost (juce::jlimit (0.0f,
+                                                     1.0f,
+                                                     q->convertTo0to1 (nextQ)));
+        }
+        else
+        {
+            const auto normalX = juce::jlimit (0.0f,
+                                               1.0f,
+                                               (event.position.x - spectrumBounds.getX())
+                                                   / spectrumBounds.getWidth());
+            const auto rawFrequency = 20.0f
+                                    * std::pow (getNyquist() / 20.0f, normalX);
+            const auto area = weightNodeArea();
+            const auto normalGain = juce::jlimit (0.0f,
+                                                  1.0f,
+                                                  (area.getBottom() - event.position.y)
+                                                      / area.getHeight());
+            frequency->setValueNotifyingHost (juce::jlimit (
+                0.0f, 1.0f, frequency->convertTo0to1 (rawFrequency)));
+            gain->setValueNotifyingHost (normalGain);
+        }
+
+        repaint();
+    }
+
+    void endWeightNodeDrag()
+    {
+        if (! weightNodeDragging)
+            return;
+
+        for (const auto* parameterId : { smart_ducking::parameter_ids::weightFrequencyHz,
+                                         smart_ducking::parameter_ids::weightGainDb,
+                                         smart_ducking::parameter_ids::weightQ })
+            if (auto* parameter = state.getParameter (parameterId))
+                parameter->endChangeGesture();
+
+        weightNodeDragging = false;
+    }
+
+    void resetWeightNode()
+    {
+        for (const auto* parameterId : { smart_ducking::parameter_ids::weightFrequencyHz,
+                                         smart_ducking::parameter_ids::weightGainDb,
+                                         smart_ducking::parameter_ids::weightQ })
+        {
+            if (auto* parameter = state.getParameter (parameterId))
+            {
+                parameter->beginChangeGesture();
+                parameter->setValueNotifyingHost (parameter->getDefaultValue());
+                parameter->endChangeGesture();
+            }
+        }
+
+        repaint();
     }
 
     void updateDraggedParameter (float mouseX)
@@ -1552,8 +1796,12 @@ private:
     float cachedCrossoverNyquist = -1.0f;
     juce::Rectangle<float> cachedCrossoverBounds;
     int historyWritePosition = 0;
+    float weightDragStartY = 0.0f;
+    float weightDragStartQ = 0.8f;
     bool hasSpectrumFrame = false;
     bool hasSpectrumCalibration = false;
+    bool weightNodeDragging = false;
+    bool weightDragAdjustsQ = false;
 };
 
 SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
@@ -1678,9 +1926,6 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     addSliderControl (dynamicsPage, dynamicsControls, lookaheadMs, "LOOKAHEAD", "ms");
 
     addSliderControl (spectrumPage, spectrumControls, spectralAmountDb, "AMOUNT", "dB");
-    addSliderControl (spectrumPage, spectrumControls, weightFrequencyHz, "WEIGHT FREQ", "Hz");
-    addSliderControl (spectrumPage, spectrumControls, weightGainDb, "WEIGHT GAIN", "dB");
-    addSliderControl (spectrumPage, spectrumControls, weightQ, "WEIGHT Q", "");
 
     spectrumPage.addAndMakeVisible (fftLabel);
     spectrumPage.addAndMakeVisible (fftChoice);
@@ -1725,6 +1970,10 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
                                           true,
                                           true);
         control.label.setVisible (false);
+        control.slider.onValueChange = [this, index]
+        {
+            mirrorMatrixEdit (index);
+        };
     }
 
     const std::array<const char*, 5> matrixChannelNames { "L", "C", "R", "Ls", "Rs" };
@@ -1754,7 +2003,8 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
                          juce::Justification::centred);
     }
 
-    for (auto* button : { &matrixDiagonalButton, &matrixResetButton })
+    for (auto* button : { &matrixDiagonalButton, &matrixResetButton,
+                          &matrixSymmetryButton })
         routingPage.addAndMakeVisible (*button);
 
     matrixDiagonalButton.onClick = [this]
@@ -1765,8 +2015,12 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
         applyMatrixValues (values);
     };
     matrixResetButton.onClick = [this] { applyMatrixValues (defaultMatrixValues); };
+    matrixSymmetryButton.setClickingTogglesState (true);
+    matrixSymmetryButton.onClick = [this] { saveUiState(); };
     matrixDiagonalButton.setTooltip ("Route every voice channel only to the matching main channel.");
     matrixResetButton.setTooltip ("Restore the default ducking matrix.");
+    matrixSymmetryButton.setTooltip (
+        "Mirror manual matrix edits between L/R and Ls/Rs without rewriting host automation.");
 
     addAndMakeVisible (voiceFormatLabel);
     addAndMakeVisible (voiceFormatChoice);
@@ -1798,8 +2052,9 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     if (const auto* downmixValue = processor.getParameterState().getRawParameterValue (downmix))
         dropLfeToggle.setEnabled (downmixValue->load() >= 0.5f);
 
-    setAdvancedPage (AdvancedPage::dynamics);
-    setEditorMode (EditorMode::simple);
+    restoreUiState();
+    setAdvancedPage (advancedPage);
+    setEditorMode (editorMode);
     processor.setVisualisationFrameRate (meterRefreshHz);
     processor.notifyEditorOpened();
     startTimerHz (static_cast<int> (meterRefreshHz));
@@ -1968,7 +2223,7 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
     auto rightMeters = juce::Rectangle<float> (rightX, meterTop, rightWidth, meterHeight);
     const auto leftHalf = (leftMeters.getWidth() - 6.0f) * 0.5f;
     const auto voiceChannels = getVoiceSpatialChannelCount() == 5 ? 5 : 2;
-    const auto outputChannels = processor.isSurroundVariant() ? 5 : 2;
+    const auto outputChannels = processor.getOutputMeterChannelCount();
     const auto* vlcMode = processor.getParameterState().getRawParameterValue (
         smart_ducking::parameter_ids::vlcMode);
     const auto vlcModeIsEnabled = processor.isSurroundVariant()
@@ -2161,16 +2416,12 @@ void SmartDuckingAudioProcessorEditor::mouseDown (const juce::MouseEvent& event)
 
 void SmartDuckingAudioProcessorEditor::setEditorMode (EditorMode newMode)
 {
-    const auto enteringAdvanced = newMode == EditorMode::advanced
-                               && editorMode != EditorMode::advanced;
     editorMode = newMode;
-
-    if (enteringAdvanced)
-        setAdvancedPage (AdvancedPage::dynamics);
 
     simplePanel.setVisible (editorMode == EditorMode::simple);
     advancedPanel.setVisible (editorMode == EditorMode::advanced);
     updateModeButtons();
+    saveUiState();
     resized();
     repaint();
 }
@@ -2182,8 +2433,58 @@ void SmartDuckingAudioProcessorEditor::setAdvancedPage (AdvancedPage newPage)
     spectrumPage.setVisible (advancedPage == AdvancedPage::spectrum);
     routingPage.setVisible (advancedPage == AdvancedPage::routing);
     updateAdvancedButtons();
+    saveUiState();
     layoutAdvancedPanel();
     repaint();
+}
+
+void SmartDuckingAudioProcessorEditor::saveUiState()
+{
+    auto& state = processor.getParameterState().state;
+    state.setProperty ("uiEditorMode", static_cast<int> (editorMode), nullptr);
+    state.setProperty ("uiAdvancedPage", static_cast<int> (advancedPage), nullptr);
+    state.setProperty ("uiMatrixSymmetryLink",
+                       matrixSymmetryButton.getToggleState(),
+                       nullptr);
+}
+
+void SmartDuckingAudioProcessorEditor::restoreUiState()
+{
+    const auto& state = processor.getParameterState().state;
+    editorMode = static_cast<EditorMode> (juce::jlimit (
+        0, 1, static_cast<int> (state.getProperty ("uiEditorMode", 0))));
+    advancedPage = static_cast<AdvancedPage> (juce::jlimit (
+        0, 2, static_cast<int> (state.getProperty ("uiAdvancedPage", 0))));
+    matrixSymmetryButton.setToggleState (
+        static_cast<bool> (state.getProperty ("uiMatrixSymmetryLink", false)),
+        juce::dontSendNotification);
+}
+
+void SmartDuckingAudioProcessorEditor::mirrorMatrixEdit (size_t sourceIndex)
+{
+    if (applyingSymmetryEdit
+        || ! matrixSymmetryButton.getToggleState()
+        || sourceIndex >= matrixControls.size())
+        return;
+
+    auto& source = matrixControls[sourceIndex]->slider;
+    const auto isManualEdit = source.isMouseButtonDown()
+                           || source.hasKeyboardFocus (true);
+
+    if (! isManualEdit)
+        return;
+
+    const auto voice = static_cast<int> (sourceIndex / 5);
+    const auto main = static_cast<int> (sourceIndex % 5);
+    const auto mirrorIndex = smart_ducking::LcrDuckMatrix::mirroredCoefficientIndex (
+        voice, main);
+
+    if (mirrorIndex == sourceIndex || mirrorIndex >= matrixControls.size())
+        return;
+
+    const juce::ScopedValueSetter<bool> guard (applyingSymmetryEdit, true);
+    matrixControls[mirrorIndex]->slider.setValue (source.getValue(),
+                                                   juce::sendNotificationSync);
 }
 
 void SmartDuckingAudioProcessorEditor::setMonitorMode (smart_ducking::MonitorMode requestedMode)
@@ -2353,6 +2654,7 @@ void SmartDuckingAudioProcessorEditor::layoutMatrix()
     const auto buttonWidth = juce::jmin (128, buttonRow.getWidth() / 5);
     matrixResetButton.setBounds (buttonRow.removeFromRight (buttonWidth).reduced (3, 0));
     matrixDiagonalButton.setBounds (buttonRow.removeFromRight (buttonWidth).reduced (3, 0));
+    matrixSymmetryButton.setBounds (buttonRow.removeFromRight (buttonWidth).reduced (3, 0));
 
     constexpr int leftHeaderWidth = 42;
     constexpr int topHeaderHeight = 30;
