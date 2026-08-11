@@ -58,6 +58,8 @@ private:
     void layoutSimplePanel();
     void layoutAdvancedPanel();
     void layoutMatrix();
+    void setMonitorMode (smart_ducking::MonitorMode);
+    void updateStageButtons();
     int getVoiceSpatialChannelCount() const noexcept;
     int getMainSpatialChannelCount() const noexcept;
     void applyMatrixValues (const std::array<float, 25>&);
@@ -80,6 +82,16 @@ private:
 
     juce::TextButton simpleModeButton { "SIMPLE" };
     juce::TextButton advancedModeButton { "ADVANCED" };
+    juce::Component stageControlPanel;
+    std::array<juce::Label, 3> stageLabels;
+    std::array<juce::TextButton, 9> stageButtons {
+        juce::TextButton { "B" }, juce::TextButton { "S" },
+        juce::TextButton { juce::String::charToString (0x0394) },
+        juce::TextButton { "B" }, juce::TextButton { "S" },
+        juce::TextButton { juce::String::charToString (0x0394) },
+        juce::TextButton { "B" }, juce::TextButton { "S" },
+        juce::TextButton { juce::String::charToString (0x0394) }
+    };
 
     juce::Component simplePanel;
     juce::Component advancedPanel;
@@ -121,6 +133,7 @@ private:
     std::unique_ptr<ComboBoxAttachment> voiceFormatAttachment;
     std::unique_ptr<ButtonAttachment> downmixAttachment;
     std::unique_ptr<ButtonAttachment> dropLfeAttachment;
+    std::array<std::unique_ptr<ButtonAttachment>, 3> stageBypassAttachments;
 
     std::array<float, 5> displayedMainPeaks {};
     std::array<float, 5> displayedVoicePeaks {};
@@ -131,6 +144,7 @@ private:
     EditorMode editorMode = EditorMode::simple;
     AdvancedPage advancedPage = AdvancedPage::routing;
     juce::Rectangle<float> duckingLampBounds;
+    juce::Rectangle<float> activityStatusBounds;
     juce::Rectangle<float> mainInputMeterBounds;
     bool duckingIndicatorActive = false;
     bool editorVisualisationActive = true;

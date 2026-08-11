@@ -22,6 +22,10 @@ inline constexpr auto voiceFormat = "voiceFormat";
 inline constexpr auto vlcMode = "vlcMode";
 inline constexpr auto downmix = "downmix";
 inline constexpr auto dropLfe = "dropLfe";
+inline constexpr auto crossoverBypass = "crossoverBypass";
+inline constexpr auto widebandBypass = "widebandBypass";
+inline constexpr auto spectralBypass = "spectralBypass";
+inline constexpr auto monitorMode = "monitorMode";
 
 inline constexpr auto matrixLL = "matrixLL";
 inline constexpr auto matrixLC = "matrixLC";

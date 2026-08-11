@@ -1576,12 +1576,65 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
 
     addAndMakeVisible (simpleModeButton);
     addAndMakeVisible (advancedModeButton);
+    addAndMakeVisible (stageControlPanel);
     simpleModeButton.setClickingTogglesState (false);
     advancedModeButton.setClickingTogglesState (false);
     simpleModeButton.onClick = [this] { setEditorMode (EditorMode::simple); };
     advancedModeButton.onClick = [this] { setEditorMode (EditorMode::advanced); };
     simpleModeButton.setTooltip ("Show the essential controls only.");
     advancedModeButton.setTooltip ("Show dynamics, spectral shaping and routing controls.");
+
+    const std::array<const char*, 3> stageNames { "CROSSOVER", "WIDEBAND", "SPECTRAL" };
+    const std::array<const char*, 3> bypassParameterIds {
+        crossoverBypass, widebandBypass, spectralBypass
+    };
+    const std::array<smart_ducking::MonitorMode, 3> soloModes {
+        smart_ducking::MonitorMode::crossoverSolo,
+        smart_ducking::MonitorMode::widebandSolo,
+        smart_ducking::MonitorMode::spectralSolo
+    };
+    const std::array<smart_ducking::MonitorMode, 3> deltaModes {
+        smart_ducking::MonitorMode::crossoverDelta,
+        smart_ducking::MonitorMode::widebandDelta,
+        smart_ducking::MonitorMode::spectralDelta
+    };
+
+    for (size_t stage = 0; stage < stageLabels.size(); ++stage)
+    {
+        auto& label = stageLabels[stage];
+        stageControlPanel.addAndMakeVisible (label);
+        label.setText (stageNames[stage], juce::dontSendNotification);
+        label.setJustificationType (juce::Justification::centred);
+        label.setColour (juce::Label::textColourId, secondaryTextColour);
+        label.setFont (juce::FontOptions { 10.0f, juce::Font::bold });
+        label.setInterceptsMouseClicks (false, false);
+
+        for (size_t control = 0; control < 3; ++control)
+        {
+            auto& button = stageButtons[stage * 3 + control];
+            stageControlPanel.addAndMakeVisible (button);
+            button.setTooltip (control == 0
+                ? "Bypass this stage independently."
+                : control == 1
+                    ? "Solo this stage while bypassing the other two."
+                    : stage == 0
+                        ? "Monitor the protected low band without LFE."
+                        : "Monitor only the signal removed by this stage.");
+        }
+
+        auto& bypass = stageButtons[stage * 3];
+        bypass.setClickingTogglesState (true);
+        stageBypassAttachments[stage] = std::make_unique<ButtonAttachment> (
+            processor.getParameterState(), bypassParameterIds[stage], bypass);
+        stageButtons[stage * 3 + 1].onClick = [this, mode = soloModes[stage]]
+        {
+            setMonitorMode (mode);
+        };
+        stageButtons[stage * 3 + 2].onClick = [this, mode = deltaModes[stage]]
+        {
+            setMonitorMode (mode);
+        };
+    }
 
     addAndMakeVisible (*spectrumPanel);
     addAndMakeVisible (simplePanel);
@@ -1897,6 +1950,13 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
     graphics.fillEllipse (duckingLampBounds.reduced (2.0f));
     graphics.setColour (lampGlow.withAlpha (0.75f));
     graphics.drawEllipse (duckingLampBounds, 1.0f);
+    graphics.setColour (duckingIndicatorActive ? voiceColour : mutedTextColour);
+    graphics.setFont (juce::FontOptions { 10.0f, juce::Font::bold });
+    graphics.drawText (duckingIndicatorActive ? "ACTIVE" : "SLEEP",
+                       activityStatusBounds,
+                       juce::Justification::centredRight);
+
+    drawCard (graphics, stageControlPanel.getBounds().toFloat(), 8.0f);
 
     const auto spectrum = spectrumPanel->getBounds().toFloat();
     const auto meterTop = spectrum.getY();
@@ -1960,8 +2020,10 @@ void SmartDuckingAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
     auto header = bounds.removeFromTop (headerHeight).reduced (12, 10);
-    auto lampArea = header.removeFromRight (24);
-    duckingLampBounds = lampArea.toFloat().withSizeKeepingCentre (12.0f, 12.0f);
+    auto lampArea = header.removeFromRight (76);
+    duckingLampBounds = lampArea.removeFromRight (18).toFloat().withSizeKeepingCentre (12.0f,
+                                                                                      12.0f);
+    activityStatusBounds = lampArea.toFloat();
     header.removeFromRight (6);
 
     const auto placeHeaderControl = [&header] (juce::Component& component,
@@ -1984,7 +2046,24 @@ void SmartDuckingAudioProcessorEditor::resized()
     header.removeFromRight (4);
     placeHeaderControl (voiceFormatLabel, 45, 28);
 
-    bounds.reduce (12, 10);
+    auto stageRow = bounds.removeFromTop (54).reduced (12, 5);
+    stageControlPanel.setBounds (stageRow);
+    auto stageContent = stageControlPanel.getLocalBounds().reduced (8, 4);
+    const auto stageWidth = stageContent.getWidth() / 3;
+
+    for (size_t stage = 0; stage < stageLabels.size(); ++stage)
+    {
+        auto group = stageContent.removeFromLeft (
+            stage == stageLabels.size() - 1 ? stageContent.getWidth() : stageWidth);
+        stageLabels[stage].setBounds (group.removeFromLeft (juce::jmax (72, group.getWidth() / 2)));
+        const auto buttonWidth = group.getWidth() / 3;
+
+        for (size_t control = 0; control < 3; ++control)
+            stageButtons[stage * 3 + control].setBounds (group.removeFromLeft (
+                control == 2 ? group.getWidth() : buttonWidth).reduced (2, 3));
+    }
+
+    bounds.reduce (12, 6);
     const auto leftMeterWidth = juce::jlimit (150, 166, getWidth() / 6);
     const auto rightMeterWidth = juce::jlimit (90, 100, getWidth() / 10);
     const auto bottomHeight = juce::jlimit (210, 250, getHeight() * 34 / 100);
@@ -2105,6 +2184,54 @@ void SmartDuckingAudioProcessorEditor::setAdvancedPage (AdvancedPage newPage)
     updateAdvancedButtons();
     layoutAdvancedPanel();
     repaint();
+}
+
+void SmartDuckingAudioProcessorEditor::setMonitorMode (smart_ducking::MonitorMode requestedMode)
+{
+    auto* parameter = processor.getParameterState().getParameter (
+        smart_ducking::parameter_ids::monitorMode);
+
+    if (parameter == nullptr)
+        return;
+
+    const auto currentMode = static_cast<smart_ducking::MonitorMode> (juce::jlimit (
+        0,
+        6,
+        juce::roundToInt (parameter->convertFrom0to1 (parameter->getValue()))));
+    const auto newMode = currentMode == requestedMode
+        ? smart_ducking::MonitorMode::normal
+        : requestedMode;
+    parameter->beginChangeGesture();
+    parameter->setValueNotifyingHost (parameter->convertTo0to1 (
+        static_cast<float> (newMode)));
+    parameter->endChangeGesture();
+    updateStageButtons();
+}
+
+void SmartDuckingAudioProcessorEditor::updateStageButtons()
+{
+    const auto* monitor = processor.getParameterState().getRawParameterValue (
+        smart_ducking::parameter_ids::monitorMode);
+    const auto mode = static_cast<smart_ducking::MonitorMode> (juce::jlimit (
+        0, 6, monitor != nullptr ? juce::roundToInt (monitor->load()) : 0));
+    const std::array<smart_ducking::MonitorMode, 3> soloModes {
+        smart_ducking::MonitorMode::crossoverSolo,
+        smart_ducking::MonitorMode::widebandSolo,
+        smart_ducking::MonitorMode::spectralSolo
+    };
+    const std::array<smart_ducking::MonitorMode, 3> deltaModes {
+        smart_ducking::MonitorMode::crossoverDelta,
+        smart_ducking::MonitorMode::widebandDelta,
+        smart_ducking::MonitorMode::spectralDelta
+    };
+
+    for (size_t stage = 0; stage < stageLabels.size(); ++stage)
+    {
+        stageButtons[stage * 3 + 1].setToggleState (mode == soloModes[stage],
+                                                    juce::dontSendNotification);
+        stageButtons[stage * 3 + 2].setToggleState (mode == deltaModes[stage],
+                                                    juce::dontSendNotification);
+    }
 }
 
 void SmartDuckingAudioProcessorEditor::updateModeButtons()
@@ -2374,15 +2501,12 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
                                                        spectralReduction[channel]);
     }
 
-    const auto maximumWide = *std::max_element (displayedReductionDb.begin(),
-                                                 displayedReductionDb.end());
-    const auto maximumSpectral = *std::max_element (displayedSpectralDb.begin(),
-                                                     displayedSpectralDb.end());
     spectrumPanel->updateSpectrum();
 
-    const auto ducking = juce::jmax (maximumWide, maximumSpectral) > 0.05f;
-    const auto duckingStateChanged = ducking != duckingIndicatorActive;
-    duckingIndicatorActive = ducking;
+    updateStageButtons();
+    const auto heavyPathActive = processor.isHeavyPathActive();
+    const auto duckingStateChanged = heavyPathActive != duckingIndicatorActive;
+    duckingIndicatorActive = heavyPathActive;
 
     const auto spectrum = spectrumPanel->getBounds().toFloat();
     const auto leftMeterWidth = juce::jmax (108.0f, spectrum.getX() - 24.0f);
@@ -2402,7 +2526,7 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
                  .toNearestInt());
 
     if (duckingStateChanged)
-        repaint (duckingLampBounds.expanded (6.0f).toNearestInt());
+        repaint (duckingLampBounds.getUnion (activityStatusBounds).expanded (6.0f).toNearestInt());
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
     processor.recordEditorTimerDuration (static_cast<std::uint64_t> (
         juce::Time::getHighResolutionTicks() - diagnosticTimerStart));

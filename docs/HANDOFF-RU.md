@@ -334,12 +334,9 @@ Lookahead является активным параметром 0–50 ms. Он
 - VLC mode доступен из меню Main meter;
 - Downmix/Drop LFE видны только в Surround class.
 
-Lookahead уже находится в Advanced/Dynamics. Следующие согласованные изменения описаны в implementation plan:
+Lookahead уже находится в Advanced/Dynamics. Единая группа `B / S / Δ` и фактический индикатор `SLEEP / ACTIVE` реализованы в Stage B. Следующие согласованные изменения описаны в implementation plan:
 
 - weighting EQ как одна draggable parametric node;
-- единая группа Bypass/Solo/Delta для Crossover/Wideband/Spectral;
-- Crossover Delta слушает защищённый low band, а не математическую разность;
-- SLEEP/ACTIVE вместо простого sidechain-present indicator;
 - L/R Symmetry Link матрицы;
 - Output meter показывает только L/R при forced downmix;
 - сохранение Simple/Advanced/page/link UI-state.
@@ -496,7 +493,7 @@ pluginval будет подключён как отдельный dev/CI executa
 
 ## 14. Известные проблемы на момент handoff
 
-Stage A реализован: NORMAL покрыт characterization-тестами, FFT/Processing changes не реконфигурируют DSP в audio callback, host names используют `QUALITY / NORMAL`, Sidechain Pre-Gain удалён с migration test, а Lookahead работает с постоянным 50 ms PDC reserve.
+Stages A и B реализованы: безопасная конфигурация и Lookahead дополнены Bypass/Solo/Delta для трёх стадий, взаимоисключающим Monitor Mode, low-only Crossover Delta без LFE и фактической SLEEP/ACTIVE-индикацией.
 
 Оставшиеся известные проблемы:
 
@@ -507,22 +504,15 @@ Stage A реализован: NORMAL покрыт characterization-тестам�
 5. Simple/Advanced page и часть UI-state не сохраняются между editor instances.
 6. `SpectralSuppressor.h` объединяет слишком много ответственностей.
 7. В editor остаются подтверждённые dead history/components.
-8. Bypass/Solo/Delta, SLEEP/ACTIVE и L/R Symmetry Link ещё не реализованы.
+8. L/R Symmetry Link ещё не реализован.
 
 Полное решение и порядок находятся в `implementation-plan-ru.md`.
 
 ## 15. Рекомендуемая точка продолжения
 
-Stage A завершён. Следующая функциональная итерация — Stage B из implementation plan:
+Stages A и B завершены. Следующая функциональная итерация — Stage C из implementation plan: интерактивная weighting-нода анализатора, сглаживание конечных matrix controls, L/R Symmetry Link, динамический Output meter при downmix и сохранение UI-state.
 
-1. ввести три bypass-параметра и взаимоисключающий Monitor Mode;
-2. реализовать Bypass/Solo/Delta для Crossover, Wideband и Spectral;
-3. Crossover Delta должен воспроизводить защищённый low band без LFE;
-4. сохранить PDC во всех monitor modes и добавить click-free transitions;
-5. объединить controls трёх стадий в одну UI-группу;
-6. перевести верхний индикатор на фактический SLEEP/ACTIVE.
-
-После каждого пункта сохранять маленький проверяемый diff. Не смешивать рефакторинг `SpectralSuppressor.h`, изменение звучания и redesign UI в одном коммите.
+Не начинать с preset browser, A/B или SIMD до стабилизации Stage C.
 
 ## 16. Как диагностировать проблему
 

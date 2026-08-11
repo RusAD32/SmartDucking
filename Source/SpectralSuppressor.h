@@ -41,6 +41,10 @@ public:
         float releaseMs = 200.0f;
         float duckDepthDb = 0.0f;
         float crossoverHz = 92.0f;
+        float crossoverStageMix = 1.0f;
+        float widebandStageMix = 1.0f;
+        float spectralStageMix = 1.0f;
+        bool crossoverDelta = false;
         LcrDuckMatrix duckMatrix;
     };
 
@@ -243,6 +247,11 @@ public:
         mainIsStereo = true;
         voiceIsStereo = true;
         heavyPathSleeping = true;
+        heavyPathActive.store (false, std::memory_order_release);
+        currentCrossoverStageMix = parameters.crossoverStageMix;
+        currentWidebandStageMix = parameters.widebandStageMix;
+        currentSpectralStageMix = parameters.spectralStageMix;
+        currentCrossoverDeltaMix = parameters.crossoverDelta ? 1.0f : 0.0f;
     }
 
     void setResolutionIndex (int newResolutionIndex) noexcept
@@ -436,6 +445,11 @@ public:
     [[nodiscard]] SidechainClassifier::Mode getSidechainMode() const noexcept
     {
         return lastSidechainMode;
+    }
+
+    [[nodiscard]] bool isHeavyPathActive() const noexcept
+    {
+        return heavyPathActive.load (std::memory_order_acquire);
     }
 
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
@@ -740,6 +754,29 @@ private:
         auto diagnosticStageStart = diagnosticFrameStart;
 #endif
         const auto retainedSamples = fftSize - hopSize;
+        const auto smoothingStep = juce::jlimit (
+            0.0f,
+            1.0f,
+            static_cast<float> (hopSize / sampleRate) / stageTransitionSeconds);
+        const auto advanceStageMix = [smoothingStep] (float current, float target) noexcept
+        {
+            const auto difference = juce::jlimit (-smoothingStep,
+                                                  smoothingStep,
+                                                  target - current);
+            return current + difference;
+        };
+        currentCrossoverStageMix = advanceStageMix (
+            currentCrossoverStageMix,
+            juce::jlimit (0.0f, 1.0f, parameters.crossoverStageMix));
+        currentWidebandStageMix = advanceStageMix (
+            currentWidebandStageMix,
+            juce::jlimit (0.0f, 1.0f, parameters.widebandStageMix));
+        currentSpectralStageMix = advanceStageMix (
+            currentSpectralStageMix,
+            juce::jlimit (0.0f, 1.0f, parameters.spectralStageMix));
+        currentCrossoverDeltaMix = advanceStageMix (
+            currentCrossoverDeltaMix,
+            parameters.crossoverDelta ? 1.0f : 0.0f);
 
         shiftAnalysisFrame (analysisInput, inputHop, retainedSamples, mainIsStereo);
         shiftAnalysisFrame (sidechainAnalysisInput,
@@ -822,7 +859,17 @@ private:
             std::memory_order_relaxed);
 #endif
 
-        if (! sidechainSignalIsPresent && ! envelopeIsActive && spectralReductionIsFinished)
+        const auto crossoverDeltaNeedsFft = economyMode
+                                         && (parameters.crossoverDelta
+                                             || currentCrossoverDeltaMix > 0.0f);
+        const auto duckingStagesNeedFft = parameters.widebandStageMix > 0.0f
+                                       || parameters.spectralStageMix > 0.0f
+                                       || currentWidebandStageMix > 0.0f
+                                       || currentSpectralStageMix > 0.0f;
+
+        if ((! sidechainSignalIsPresent && ! envelopeIsActive
+             && spectralReductionIsFinished && ! crossoverDeltaNeedsFft)
+            || (! duckingStagesNeedFft && ! crossoverDeltaNeedsFft))
         {
             if (shouldUpdateVisualisation)
             {
@@ -853,6 +900,7 @@ private:
                 lastWidebandReductionDb.fill (0.0f);
                 clearPceHistory();
                 heavyPathSleeping = true;
+                heavyPathActive.store (false, std::memory_order_release);
             }
 
             finishOverlapAddFrame (retainedSamples);
@@ -873,6 +921,7 @@ private:
 
         const auto isWakingFromSleep = heavyPathSleeping;
         heavyPathSleeping = false;
+        heavyPathActive.store (true, std::memory_order_release);
 
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
         diagnosticStageStart = juce::Time::getHighResolutionTicks();
@@ -1009,7 +1058,8 @@ private:
                 : fftData[static_cast<size_t> (channel)];
             const auto frameControl = voiceControls.get (channel);
             lastWidebandReductionDb[static_cast<size_t> (channel)] =
-                parameters.duckDepthDb * targetControls.get (channel);
+                parameters.duckDepthDb * targetControls.get (channel)
+                    * currentWidebandStageMix;
             const auto combineNormalSpectralAndWideGain = ! economyMode
                 && parameters.amountDb > 0.0f
                 && frameControl > 0.0f;
@@ -1019,6 +1069,7 @@ private:
             updateSpectralMask (channel,
                                 transform,
                                 frameControl,
+                                currentSpectralStageMix,
                                 isWakingFromSleep,
                                 shouldUpdateVisualisation,
                                 combineNormalSpectralAndWideGain,
@@ -1032,7 +1083,8 @@ private:
             if (economyMode)
             {
                 if (lastMaximumReductionDb[static_cast<size_t> (channel)] > 0.0f
-                    || lastWidebandReductionDb[static_cast<size_t> (channel)] > 0.0f)
+                    || lastWidebandReductionDb[static_cast<size_t> (channel)] > 0.0f
+                    || currentCrossoverDeltaMix > 0.0f)
                     applyEconomyCrossoverGain (
                         channel,
                         transform,
@@ -1245,12 +1297,18 @@ private:
 
         for (int bin = 0; bin < bins; ++bin)
         {
-            const auto highWeight = cachedEconomyHighWeight[static_cast<size_t> (bin)];
+            const auto crossoverHighWeight = cachedEconomyHighWeight[static_cast<size_t> (bin)];
+            const auto highWeight = 1.0f - currentCrossoverStageMix
+                                  + currentCrossoverStageMix * crossoverHighWeight;
             const auto lowWeight = 1.0f - highWeight;
             const auto spectralGain = juce::Decibels::decibelsToGain (
                 -juce::jmax (0.0f, spectralReduction[static_cast<size_t> (bin)]));
-            const auto combinedGain = lowWeight
-                                    + highWeight * spectralGain * widebandGain;
+            const auto normalGain = lowWeight
+                                  + highWeight * spectralGain * widebandGain;
+            const auto crossoverDeltaGain = 1.0f - crossoverHighWeight;
+            const auto combinedGain = normalGain
+                                    + currentCrossoverDeltaMix
+                                          * (crossoverDeltaGain - normalGain);
             const auto offset = static_cast<size_t> (2 * bin);
             transform[offset] *= combinedGain;
             transform[offset + 1] *= combinedGain;
@@ -1385,6 +1443,7 @@ private:
     void updateSpectralMask (int channel,
                              std::vector<float>& transform,
                              float frameControl,
+                             float stageMix,
                              bool initialiseMaskImmediately,
                              bool captureInputSpectrum,
                              bool applyGainToTransform,
@@ -1396,8 +1455,9 @@ private:
         auto& temporal = temporalReductionDb[static_cast<size_t> (channel)];
         auto& applied = appliedSpectralReductionDb[static_cast<size_t> (channel)];
         const auto amount = juce::jmax (0.0f, parameters.amountDb);
+        stageMix = juce::jlimit (0.0f, 1.0f, stageMix);
 
-        if (amount <= 0.0f)
+        if (amount <= 0.0f || stageMix <= epsilon)
         {
             if (captureInputSpectrum)
                 captureMagnitudeDb (transform, magnitudes);
@@ -1521,7 +1581,7 @@ private:
                 smoothed = coefficient * smoothed + (1.0f - coefficient) * target;
             }
 
-            const auto appliedReductionDb = smoothed * voiceAmount;
+            const auto appliedReductionDb = smoothed * voiceAmount * stageMix;
             applied[static_cast<size_t> (bin)] = appliedReductionDb;
             lastMaximumReductionDb[static_cast<size_t> (channel)] = juce::jmax (
                 lastMaximumReductionDb[static_cast<size_t> (channel)],
@@ -1909,6 +1969,7 @@ private:
     static constexpr float coherenceTimeSeconds = 0.050f;
     static constexpr float sleepControlThreshold = 1.0e-5f;
     static constexpr float sleepReductionThresholdDb = 0.01f;
+    static constexpr float stageTransitionSeconds = 0.030f;
     static constexpr float detectorFloorDb = -60.0f;
     static constexpr float epsilon = 1.0e-12f;
 
@@ -1970,6 +2031,7 @@ private:
     std::atomic<bool> visualisationEnabled { false };
     std::atomic<float> visualisationFrameRate { 30.0f };
     std::atomic<int> visualisationFramesUntilUpdate { 0 };
+    std::atomic<bool> heavyPathActive { false };
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
     std::atomic<std::uint64_t> diagnosticSpectralFrameCount { 0 };
     std::atomic<std::uint64_t> diagnosticSpectralFrameTicks { 0 };
@@ -1994,6 +2056,10 @@ private:
     bool mainIsStereo = true;
     bool voiceIsStereo = true;
     bool heavyPathSleeping = true;
+    float currentCrossoverStageMix = 1.0f;
+    float currentWidebandStageMix = 1.0f;
+    float currentSpectralStageMix = 1.0f;
+    float currentCrossoverDeltaMix = 0.0f;
     bool weightingCurveDirty = true;
     bool economyMode = false;
     bool economyCrossoverCurveDirty = true;

@@ -344,6 +344,20 @@ int main()
             "Main Format is fixed by plugin variant rather than exposed as a parameter");
     expect (state.getParameter ("sidechainPreGainDb") == nullptr,
             "legacy Sidechain Pre-Gain is no longer exposed to the host");
+    expect (approximatelyEqual (
+                *state.getRawParameterValue (smart_ducking::parameter_ids::crossoverBypass),
+                0.0f)
+                && approximatelyEqual (
+                    *state.getRawParameterValue (smart_ducking::parameter_ids::widebandBypass),
+                    0.0f)
+                && approximatelyEqual (
+                    *state.getRawParameterValue (smart_ducking::parameter_ids::spectralBypass),
+                    0.0f),
+            "all stage bypass parameters default to off");
+    expect (approximatelyEqual (
+                *state.getRawParameterValue (smart_ducking::parameter_ids::monitorMode),
+                0.0f),
+            "Monitor Mode defaults to Normal");
 
     if (const auto* processingMode = state.getParameter (
             smart_ducking::parameter_ids::processingMode))
@@ -357,6 +371,172 @@ int main()
         expect (false, "Processing Mode parameter exists");
     }
 
+    if (const auto* monitorMode = state.getParameter (
+            smart_ducking::parameter_ids::monitorMode))
+    {
+        const auto choices = monitorMode->getAllValueStrings();
+        expect (choices == juce::StringArray { "Normal", "Crossover Solo",
+                                               "Crossover Delta", "Wideband Solo",
+                                               "Wideband Delta", "Spectral Solo",
+                                               "Spectral Delta" },
+                "host Monitor Mode exposes one unambiguous Solo/Delta choice");
+    }
+    else
+    {
+        expect (false, "Monitor Mode parameter exists");
+    }
+
+    {
+        const auto configureWideband = [] (SmartDuckingAudioProcessor& stageProcessor)
+        {
+            setParameter (stageProcessor, smart_ducking::parameter_ids::processingMode, 1.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::attackMs, 0.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::holdMs, 0.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::duckDepthDb, 12.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+        };
+
+        SmartDuckingAudioProcessor wet;
+        configureWideband (wet);
+        const auto wetResult = processTone (wet, 1000.0, 1.0f, 1.0f);
+
+        SmartDuckingAudioProcessor bypassed;
+        configureWideband (bypassed);
+        setParameter (bypassed, smart_ducking::parameter_ids::widebandBypass, 1.0f);
+        const auto bypassedResult = processTone (bypassed, 1000.0, 1.0f, 1.0f);
+        expect (wetResult.leftRatio < 0.55 && bypassedResult.leftRatio > 0.95,
+                "Wideband Bypass disables broadband attenuation");
+
+        SmartDuckingAudioProcessor solo;
+        configureWideband (solo);
+        setParameter (solo, smart_ducking::parameter_ids::widebandBypass, 1.0f);
+        setParameter (solo, smart_ducking::parameter_ids::monitorMode,
+                      static_cast<float> (smart_ducking::MonitorMode::widebandSolo));
+        const auto soloResult = processTone (solo, 1000.0, 1.0f, 1.0f);
+        expect (soloResult.leftRatio < 0.55,
+                "Wideband Solo overrides bypass and bypasses the other stages");
+
+        SmartDuckingAudioProcessor delta;
+        configureWideband (delta);
+        setParameter (delta, smart_ducking::parameter_ids::monitorMode,
+                      static_cast<float> (smart_ducking::MonitorMode::widebandDelta));
+        const auto deltaResult = processTone (delta, 1000.0, 1.0f, 1.0f);
+        expect (deltaResult.leftRatio > 0.35 && deltaResult.leftRatio < 0.9,
+                "Wideband Delta returns the signal removed by the wideband stage");
+    }
+
+    {
+        const auto configureLowProtection = [] (SmartDuckingAudioProcessor& stageProcessor)
+        {
+            setParameter (stageProcessor, smart_ducking::parameter_ids::processingMode, 1.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::attackMs, 0.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::holdMs, 0.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::duckDepthDb, 12.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+        };
+
+        SmartDuckingAudioProcessor protectedLow;
+        configureLowProtection (protectedLow);
+        const auto protectedResult = processTone (protectedLow, 40.0, 1.0f, 1.0f);
+
+        SmartDuckingAudioProcessor crossoverBypassed;
+        configureLowProtection (crossoverBypassed);
+        setParameter (crossoverBypassed,
+                      smart_ducking::parameter_ids::crossoverBypass,
+                      1.0f);
+        const auto bypassedResult = processTone (crossoverBypassed, 40.0, 1.0f, 1.0f);
+        expect (protectedResult.leftRatio > 0.9 && bypassedResult.leftRatio < 0.55,
+                "Crossover Bypass disables low-band protection");
+
+        SmartDuckingAudioProcessor crossoverSolo;
+        configureLowProtection (crossoverSolo);
+        setParameter (crossoverSolo,
+                      smart_ducking::parameter_ids::monitorMode,
+                      static_cast<float> (smart_ducking::MonitorMode::crossoverSolo));
+        const auto soloResult = processTone (crossoverSolo, 1000.0, 1.0f, 1.0f);
+        expect (soloResult.leftRatio > 0.95,
+                "Crossover Solo bypasses Wideband and Spectral while retaining alignment");
+    }
+
+    {
+        const auto configureSpectral = [] (SmartDuckingAudioProcessor& stageProcessor)
+        {
+            setParameter (stageProcessor, smart_ducking::parameter_ids::processingMode, 1.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::attackMs, 0.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::holdMs, 0.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+            setParameter (stageProcessor, smart_ducking::parameter_ids::spectralAmountDb, 12.0f);
+        };
+
+        SmartDuckingAudioProcessor wet;
+        configureSpectral (wet);
+        const auto wetResult = processTone (wet, 3000.0, 1.0f, 1.0f);
+
+        SmartDuckingAudioProcessor bypassed;
+        configureSpectral (bypassed);
+        setParameter (bypassed, smart_ducking::parameter_ids::spectralBypass, 1.0f);
+        const auto bypassedResult = processTone (bypassed, 3000.0, 1.0f, 1.0f);
+        expect (wetResult.leftRatio < bypassedResult.leftRatio - 0.1
+                    && bypassedResult.leftRatio > 0.95,
+                "Spectral Bypass disables spectral attenuation");
+
+        SmartDuckingAudioProcessor delta;
+        configureSpectral (delta);
+        setParameter (delta, smart_ducking::parameter_ids::monitorMode,
+                      static_cast<float> (smart_ducking::MonitorMode::spectralDelta));
+        const auto deltaResult = processTone (delta, 3000.0, 1.0f, 1.0f);
+        expect (deltaResult.leftRatio > 0.05
+                    && approximatelyEqual (static_cast<float> (
+                                                wetResult.leftRatio
+                                                + deltaResult.leftRatio),
+                                            1.0f,
+                                            0.12f),
+                "Spectral Delta returns the signal removed by the spectral stage");
+    }
+
+    for (const auto processingMode : { 0.0f, 1.0f })
+    {
+        SmartDuckingAudioProcessor lowMonitor;
+        setParameter (lowMonitor, smart_ducking::parameter_ids::processingMode, processingMode);
+        setParameter (lowMonitor, smart_ducking::parameter_ids::monitorMode,
+                      static_cast<float> (smart_ducking::MonitorMode::crossoverDelta));
+        setParameter (lowMonitor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+        setParameter (lowMonitor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+        const auto low = processTone (lowMonitor, 40.0, 0.0f, 0.0f);
+
+        SmartDuckingAudioProcessor highMonitor;
+        setParameter (highMonitor, smart_ducking::parameter_ids::processingMode, processingMode);
+        setParameter (highMonitor, smart_ducking::parameter_ids::monitorMode,
+                      static_cast<float> (smart_ducking::MonitorMode::crossoverDelta));
+        setParameter (highMonitor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+        setParameter (highMonitor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+        const auto high = processTone (highMonitor, 1000.0, 0.0f, 0.0f);
+        expect (low.leftRatio > 0.9 && high.leftRatio < 0.05,
+                processingMode < 0.5f
+                    ? "QUALITY Crossover Delta monitors only the protected low band"
+                    : "NORMAL Crossover Delta monitors the complementary FFT low band");
+        expect (lowMonitor.getLatencySamples() == highMonitor.getLatencySamples(),
+                "monitoring does not change PDC");
+    }
+
+    {
+        SmartDuckingAudioProcessor crossoverDeltaSurround (
+            smart_ducking::PluginVariant::surround);
+        setParameter (crossoverDeltaSurround,
+                      smart_ducking::parameter_ids::monitorMode,
+                      static_cast<float> (smart_ducking::MonitorMode::crossoverDelta));
+        setParameter (crossoverDeltaSurround, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+        setParameter (crossoverDeltaSurround,
+                      smart_ducking::parameter_ids::spectralAmountDb,
+                      0.0f);
+        const auto lfeOnly = processSpatialTone (crossoverDeltaSurround,
+                                                 { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f },
+                                                 {},
+                                                 40.0);
+        expect (*std::max_element (lfeOnly.outputRatios.begin(),
+                                   lfeOnly.outputRatios.end()) < 0.001,
+                "Crossover Delta excludes LFE from the monitor output");
+    }
     {
         const auto zeroLookaheadImpulse = processImpulseWithLookahead (0.0f);
         const auto defaultLookaheadImpulse = processImpulseWithLookahead (10.0f);
@@ -1398,6 +1578,10 @@ int main()
 
     constexpr float savedWeightFrequency = 4200.0f;
     setParameter (processor, smart_ducking::parameter_ids::weightFrequencyHz, savedWeightFrequency);
+    setParameter (processor, smart_ducking::parameter_ids::widebandBypass, 1.0f);
+    setParameter (processor,
+                  smart_ducking::parameter_ids::monitorMode,
+                  static_cast<float> (smart_ducking::MonitorMode::spectralDelta));
 
     juce::MemoryBlock savedState;
     processor.getStateInformation (savedState);
@@ -1409,6 +1593,15 @@ int main()
                 savedWeightFrequency,
                 0.1f),
             "parameter state round-trip");
+    expect (approximatelyEqual (
+                *restoredProcessor.getParameterState().getRawParameterValue (
+                    smart_ducking::parameter_ids::widebandBypass),
+                1.0f)
+                && approximatelyEqual (
+                    *restoredProcessor.getParameterState().getRawParameterValue (
+                        smart_ducking::parameter_ids::monitorMode),
+                    static_cast<float> (smart_ducking::MonitorMode::spectralDelta)),
+            "stage bypass and Monitor Mode survive state round-trip");
 
     {
         auto legacyState = processor.getParameterState().copyState();

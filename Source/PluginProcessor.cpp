@@ -100,6 +100,10 @@ SmartDuckingAudioProcessor::SmartDuckingAudioProcessor (smart_ducking::PluginVar
     vlcModeParameter = parameters.getRawParameterValue (vlcMode);
     downmixParameter = parameters.getRawParameterValue (downmix);
     dropLfeParameter = parameters.getRawParameterValue (dropLfe);
+    crossoverBypassParameter = parameters.getRawParameterValue (crossoverBypass);
+    widebandBypassParameter = parameters.getRawParameterValue (widebandBypass);
+    spectralBypassParameter = parameters.getRawParameterValue (spectralBypass);
+    monitorModeParameter = parameters.getRawParameterValue (monitorMode);
     matrixParameters = {
         parameters.getRawParameterValue (matrixLL), parameters.getRawParameterValue (matrixLC),
         parameters.getRawParameterValue (matrixLR), parameters.getRawParameterValue (matrixLLs),
@@ -134,7 +138,11 @@ SmartDuckingAudioProcessor::SmartDuckingAudioProcessor (smart_ducking::PluginVar
              && voiceFormatParameter != nullptr
              && vlcModeParameter != nullptr
              && downmixParameter != nullptr
-             && dropLfeParameter != nullptr);
+             && dropLfeParameter != nullptr
+             && crossoverBypassParameter != nullptr
+             && widebandBypassParameter != nullptr
+             && spectralBypassParameter != nullptr
+             && monitorModeParameter != nullptr);
 
     jassert (std::all_of (matrixParameters.begin(), matrixParameters.end(), [] (const auto* parameter)
     {
@@ -183,6 +191,9 @@ void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumEx
     lowBandDelay.prepare (delaySpec);
     const auto stftLatency = spectralLcrProcessor.getLatencySamples();
     lowBandDelay.setDelay (static_cast<float> (stftLatency));
+    dryMonitorDelay.setMaximumDelayInSamples (maximumDelay);
+    dryMonitorDelay.prepare (delaySpec);
+    dryMonitorDelay.setDelay (static_cast<float> (stftLatency));
 
     maximumLookaheadSamples = static_cast<int> (std::ceil (0.050 * currentSampleRate));
     const auto maximumLookaheadDelay = maximumLookaheadSamples + 2;
@@ -200,6 +211,27 @@ void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumEx
     sidechainLookaheadDelay.setDelay (initialSidechainDelay);
     smoothedSidechainDelaySamples.reset (currentSampleRate, 0.020);
     smoothedSidechainDelaySamples.setCurrentAndTargetValue (initialSidechainDelay);
+
+    const auto initialMonitorMode = static_cast<smart_ducking::MonitorMode> (juce::jlimit (
+        0, 6, juce::roundToInt (monitorModeParameter->load())));
+    const auto initialCrossoverEnabled = initialMonitorMode == smart_ducking::MonitorMode::normal
+        ? crossoverBypassParameter->load() < 0.5f
+        : initialMonitorMode == smart_ducking::MonitorMode::crossoverSolo
+            || initialMonitorMode == smart_ducking::MonitorMode::crossoverDelta;
+    const auto initialDelta = initialMonitorMode == smart_ducking::MonitorMode::widebandDelta
+                           || initialMonitorMode == smart_ducking::MonitorMode::spectralDelta;
+    const auto initialQualityCrossoverDelta = ! useNormalMode
+        && initialMonitorMode == smart_ducking::MonitorMode::crossoverDelta;
+    smoothedQualityCrossoverMix.reset (currentSampleRate, 0.030);
+    smoothedQualityCrossoverMix.setCurrentAndTargetValue (initialCrossoverEnabled ? 1.0f : 0.0f);
+    smoothedDeltaMonitorMix.reset (currentSampleRate, 0.030);
+    smoothedDeltaMonitorMix.setCurrentAndTargetValue (initialDelta ? 1.0f : 0.0f);
+    smoothedQualityCrossoverDeltaMix.reset (currentSampleRate, 0.030);
+    smoothedQualityCrossoverDeltaMix.setCurrentAndTargetValue (
+        initialQualityCrossoverDelta ? 1.0f : 0.0f);
+    smoothedCrossoverDeltaLfeMute.reset (currentSampleRate, 0.030);
+    smoothedCrossoverDeltaLfeMute.setCurrentAndTargetValue (
+        initialMonitorMode == smart_ducking::MonitorMode::crossoverDelta ? 1.0f : 0.0f);
 
     const auto totalLatency = getTotalLatencySamples();
     setLatencySamples (totalLatency);
@@ -330,6 +362,8 @@ void SmartDuckingAudioProcessor::applyRequestedDspConfiguration()
         crossover.reset();
         lowBandDelay.reset();
         lowBandDelay.setDelay (static_cast<float> (spectralLcrProcessor.getLatencySamples()));
+        dryMonitorDelay.reset();
+        dryMonitorDelay.setDelay (static_cast<float> (spectralLcrProcessor.getLatencySamples()));
         currentEconomyMode.store (requestedNormalMode, std::memory_order_relaxed);
         currentResolutionIndex.store (requestedResolution, std::memory_order_relaxed);
     }
@@ -405,6 +439,33 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const auto useVlcOrder = vlcModeParameter->load() >= 0.5f;
     const auto forceDownmix = downmixParameter->load() >= 0.5f;
     const auto dropLfe = dropLfeParameter->load() >= 0.5f;
+    const auto useNormalMode = currentEconomyMode.load (std::memory_order_relaxed);
+    const auto monitorMode = static_cast<smart_ducking::MonitorMode> (juce::jlimit (
+        0, 6, juce::roundToInt (monitorModeParameter->load())));
+    auto crossoverEnabled = crossoverBypassParameter->load() < 0.5f;
+    auto widebandEnabled = widebandBypassParameter->load() < 0.5f;
+    auto spectralEnabled = spectralBypassParameter->load() < 0.5f;
+
+    if (monitorMode != smart_ducking::MonitorMode::normal)
+    {
+        crossoverEnabled = monitorMode == smart_ducking::MonitorMode::crossoverSolo
+                        || monitorMode == smart_ducking::MonitorMode::crossoverDelta;
+        widebandEnabled = monitorMode == smart_ducking::MonitorMode::widebandSolo
+                      || monitorMode == smart_ducking::MonitorMode::widebandDelta;
+        spectralEnabled = monitorMode == smart_ducking::MonitorMode::spectralSolo
+                       || monitorMode == smart_ducking::MonitorMode::spectralDelta;
+    }
+
+    smoothedQualityCrossoverMix.setTargetValue (crossoverEnabled ? 1.0f : 0.0f);
+    smoothedDeltaMonitorMix.setTargetValue (
+        monitorMode == smart_ducking::MonitorMode::widebandDelta
+            || monitorMode == smart_ducking::MonitorMode::spectralDelta
+            ? 1.0f : 0.0f);
+    smoothedQualityCrossoverDeltaMix.setTargetValue (
+        ! useNormalMode && monitorMode == smart_ducking::MonitorMode::crossoverDelta
+            ? 1.0f : 0.0f);
+    smoothedCrossoverDeltaLfeMute.setTargetValue (
+        monitorMode == smart_ducking::MonitorMode::crossoverDelta ? 1.0f : 0.0f);
     const auto visualisationActive = spectralLcrProcessor.isVisualisationEnabled();
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
     constexpr auto diagnosticsActive = true;
@@ -430,7 +491,6 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     crossover.setCutoffHz (crossoverParameter->load());
-    const auto useNormalMode = currentEconomyMode.load (std::memory_order_relaxed);
     const auto requestedLookaheadSamples = juce::jlimit (
         0.0f,
         static_cast<float> (maximumLookaheadSamples),
@@ -451,6 +511,11 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     spectralParameters.releaseMs = releaseParameter->load();
     spectralParameters.duckDepthDb = duckDepthParameter->load();
     spectralParameters.crossoverHz = crossoverParameter->load();
+    spectralParameters.crossoverStageMix = crossoverEnabled ? 1.0f : 0.0f;
+    spectralParameters.widebandStageMix = widebandEnabled ? 1.0f : 0.0f;
+    spectralParameters.spectralStageMix = spectralEnabled ? 1.0f : 0.0f;
+    spectralParameters.crossoverDelta = useNormalMode
+        && monitorMode == smart_ducking::MonitorMode::crossoverDelta;
 
     for (size_t index = 0; index < spectralParameters.duckMatrix.coefficients.size(); ++index)
         spectralParameters.duckMatrix.coefficients[index] = matrixParameters[index]->load();
@@ -518,6 +583,7 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         smart_ducking::StereoSpectralLcrProcessor::LcrSample voiceCanonical;
         smart_ducking::StereoSpectralLcrProcessor::LcrSample rawMainCanonical;
         smart_ducking::StereoSpectralLcrProcessor::LcrSample rawVoiceCanonical;
+        smart_ducking::StereoSpectralLcrProcessor::LcrSample delayedDryMain;
         float mainLfe = 0.0f;
 
         const auto mapMain = [&] (const std::array<float, 6>& source,
@@ -566,6 +632,22 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         mapVoice (delayedVoice, voiceCanonical);
         mapVoice (rawVoice, rawVoiceCanonical);
 
+        for (int channel = 0; channel < 5; ++channel)
+        {
+            dryMonitorDelay.pushSample (channel, mainCanonical.get (channel));
+            const auto delayed = dryMonitorDelay.popSample (channel);
+
+            switch (channel)
+            {
+                case 0: delayedDryMain.left = delayed; break;
+                case 1: delayedDryMain.centre = delayed; break;
+                case 2: delayedDryMain.right = delayed; break;
+                case 3: delayedDryMain.leftSurround = delayed; break;
+                case 4: delayedDryMain.rightSurround = delayed; break;
+                default: break;
+            }
+        }
+
         const auto updatePeak = [] (float& maximum, float value) noexcept
         {
             maximum = juce::jmax (maximum, std::abs (value));
@@ -591,6 +673,7 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         smart_ducking::StereoSpectralLcrProcessor::LcrSample highInput;
         smart_ducking::StereoSpectralLcrProcessor::LcrSample delayedLow;
         smart_ducking::StereoSpectralLcrProcessor::LcrSample lowBandForVisualisation;
+        const auto qualityCrossoverMix = smoothedQualityCrossoverMix.getNextValue();
 
         const auto processCrossoverChannel = [&] (int channel, float input)
         {
@@ -623,12 +706,33 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             crossover.beginSample();
             processCrossoverChannel (0, mainCanonical.left);
             processCrossoverChannel (2, mainCanonical.right);
+            highInput.left = mainCanonical.left
+                           + qualityCrossoverMix * (highInput.left - mainCanonical.left);
+            highInput.right = mainCanonical.right
+                            + qualityCrossoverMix * (highInput.right - mainCanonical.right);
         }
         else
         {
             crossover.beginSample();
             for (int channel = 0; channel < 5; ++channel)
                 processCrossoverChannel (channel, mainCanonical.get (channel));
+
+            for (int channel = 0; channel < 5; ++channel)
+            {
+                const auto blended = mainCanonical.get (channel)
+                    + qualityCrossoverMix
+                          * (highInput.get (channel) - mainCanonical.get (channel));
+
+                switch (channel)
+                {
+                    case 0: highInput.left = blended; break;
+                    case 1: highInput.centre = blended; break;
+                    case 2: highInput.right = blended; break;
+                    case 3: highInput.leftSurround = blended; break;
+                    case 4: highInput.rightSurround = blended; break;
+                    default: break;
+                }
+            }
         }
 
         auto delayedLfe = 0.0f;
@@ -657,16 +761,18 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         if (mainIsStereo)
         {
-            fullBand.left = (useNormalMode ? 0.0f : delayedLow.left) + processedHigh.left
+            fullBand.left = (useNormalMode ? 0.0f : qualityCrossoverMix * delayedLow.left)
+                          + processedHigh.left
                           + smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
                                 * processedHigh.centre;
-            fullBand.right = (useNormalMode ? 0.0f : delayedLow.right) + processedHigh.right
+            fullBand.right = (useNormalMode ? 0.0f : qualityCrossoverMix * delayedLow.right)
+                           + processedHigh.right
                            + smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
                                  * processedHigh.centre;
         }
         else
         {
-            const auto lowMix = useNormalMode ? 0.0f : 1.0f;
+            const auto lowMix = useNormalMode ? 0.0f : qualityCrossoverMix;
             fullBand.left = lowMix * delayedLow.left + processedHigh.left;
             fullBand.centre = lowMix * delayedLow.centre + processedHigh.centre;
             fullBand.right = lowMix * delayedLow.right + processedHigh.right;
@@ -674,30 +780,54 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             fullBand.rightSurround = lowMix * delayedLow.rightSurround + processedHigh.rightSurround;
         }
 
-        std::array<float, 6> outputValues {};
+        const auto mapOutput = [mainIsStereo, forceDownmix, dropLfe] (
+                                   const auto& spatial,
+                                   float lfe)
+        {
+            std::array<float, 6> values {};
 
-        if (mainIsStereo || forceDownmix)
-        {
-            const auto lfeContribution = (! mainIsStereo && ! dropLfe) ? 0.5f * delayedLfe : 0.0f;
-            outputValues[0] = fullBand.left
+            if (mainIsStereo || forceDownmix)
+            {
+                const auto lfeContribution = (! mainIsStereo && ! dropLfe) ? 0.5f * lfe : 0.0f;
+                values[0] = spatial.left
                             + (mainIsStereo ? 0.0f
                                             : smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
-                                                  * (fullBand.centre + fullBand.leftSurround))
+                                                  * (spatial.centre + spatial.leftSurround))
                             + lfeContribution;
-            outputValues[1] = fullBand.right
+                values[1] = spatial.right
                             + (mainIsStereo ? 0.0f
                                             : smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
-                                                  * (fullBand.centre + fullBand.rightSurround))
+                                                  * (spatial.centre + spatial.rightSurround))
                             + lfeContribution;
-        }
-        else
+            }
+            else
+            {
+                values = { spatial.left,
+                           spatial.right,
+                           spatial.centre,
+                           lfe,
+                           spatial.leftSurround,
+                           spatial.rightSurround };
+            }
+
+            return values;
+        };
+
+        const auto crossoverDeltaLfeMute = smoothedCrossoverDeltaLfeMute.getNextValue();
+        auto outputValues = mapOutput (fullBand,
+                                       delayedLfe * (1.0f - crossoverDeltaLfeMute));
+        const auto dryOutputValues = mapOutput (delayedDryMain, delayedLfe);
+        const auto lowOutputValues = mapOutput (delayedLow, 0.0f);
+        const auto deltaMix = smoothedDeltaMonitorMix.getNextValue();
+        const auto crossoverDeltaMix = smoothedQualityCrossoverDeltaMix.getNextValue();
+
+        for (size_t channel = 0; channel < outputValues.size(); ++channel)
         {
-            outputValues = { fullBand.left,
-                             fullBand.right,
-                             fullBand.centre,
-                             delayedLfe,
-                             fullBand.leftSurround,
-                             fullBand.rightSurround };
+            const auto wet = outputValues[channel];
+            const auto delta = dryOutputValues[channel] - wet;
+            const auto wetOrDelta = wet + deltaMix * (delta - wet);
+            outputValues[channel] = wetOrDelta
+                + crossoverDeltaMix * (lowOutputValues[channel] - wetOrDelta);
         }
 
         if (visualisationActive)
@@ -859,6 +989,19 @@ SmartDuckingAudioProcessor::createParameterLayout()
         juce::ParameterID { downmix, parameterVersion }, "Downmix", false));
     layout.add (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { dropLfe, parameterVersion }, "Drop LFE", false));
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { crossoverBypass, parameterVersion }, "Crossover Bypass", false));
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { widebandBypass, parameterVersion }, "Wideband Bypass", false));
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { spectralBypass, parameterVersion }, "Spectral Bypass", false));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { monitorMode, parameterVersion },
+        "Monitor Mode",
+        juce::StringArray { "Normal", "Crossover Solo", "Crossover Delta",
+                            "Wideband Solo", "Wideband Delta",
+                            "Spectral Solo", "Spectral Delta" },
+        0));
 
     layout.add (makeMatrixParameter (matrixLL, "Matrix L to L", 1.00f));
     layout.add (makeMatrixParameter (matrixLC, "Matrix L to C", 0.25f));

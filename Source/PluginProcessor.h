@@ -20,6 +20,17 @@ enum class PluginVariant
     surround
 };
 
+enum class MonitorMode
+{
+    normal = 0,
+    crossoverSolo,
+    crossoverDelta,
+    widebandSolo,
+    widebandDelta,
+    spectralSolo,
+    spectralDelta
+};
+
 PluginVariant exchangeRequestedPluginVariant (PluginVariant) noexcept;
 [[nodiscard]] PluginVariant getRequestedPluginVariant() noexcept;
 } // namespace smart_ducking
@@ -59,6 +70,10 @@ public:
     [[nodiscard]] bool isActiveNormalMode() const noexcept
     {
         return currentEconomyMode.load (std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool isHeavyPathActive() const noexcept
+    {
+        return spectralLcrProcessor.isHeavyPathActive();
     }
     [[nodiscard]] bool acceptsMidi() const override { return false; }
     [[nodiscard]] bool producesMidi() const override { return false; }
@@ -331,6 +346,10 @@ private:
     std::atomic<float>* vlcModeParameter = nullptr;
     std::atomic<float>* downmixParameter = nullptr;
     std::atomic<float>* dropLfeParameter = nullptr;
+    std::atomic<float>* crossoverBypassParameter = nullptr;
+    std::atomic<float>* widebandBypassParameter = nullptr;
+    std::atomic<float>* spectralBypassParameter = nullptr;
+    std::atomic<float>* monitorModeParameter = nullptr;
     std::array<std::atomic<float>*, 25> matrixParameters {};
 
     smart_ducking::LinkwitzRiley8Crossover crossover;
@@ -338,10 +357,20 @@ private:
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> lowBandDelay;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
         mainLookaheadDelay;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
+        dryMonitorDelay;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear>
         sidechainLookaheadDelay;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
         smoothedSidechainDelaySamples;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedQualityCrossoverMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedDeltaMonitorMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedQualityCrossoverDeltaMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedCrossoverDeltaLfeMute;
     std::atomic<int> currentResolutionIndex { 1 };
     std::atomic<bool> currentEconomyMode { true };
     std::atomic<bool> configurationPending { false };
