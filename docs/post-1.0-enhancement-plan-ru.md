@@ -50,8 +50,12 @@ Solo-сигнал `Processed Main` остаётся полезным диагн�
 - допустимую ручную корректировку панорамы с учётом слышимого результата
   Smart Ducking;
 - громкость, EQ, компрессию и иной творческий processing переводного голоса;
-- воспроизведение заметной пространственной обработки оригинала, если для
-  сцены нужен room/reverb/delay или художественный эффект вроде «голоса бога»;
+- подбор room/reverb/delay для переводного Voice, если пространство сцены или
+  художественный замысел требуют совпадения с оригиналом;
+- решение, в каких сценах автоматизировать опциональный `Room Tail Suppression`:
+  алгоритм может обнаружить хвост, связанный с оригинальной репликой, но не
+  способен определить, является ли он технической акустикой помещения или
+  намеренным художественным эффектом;
 - итоговый баланс `Processed Main + Voice`.
 
 Совпадение панорамы не обязано быть математически точным. Небольшая ошибка
@@ -84,6 +88,9 @@ Post-1.0 план не включает:
 - попытку определить точные частоты оригинального актёра по спектру Voice;
 - обязательное подавление остатка оригинальной реплики до и после перевода;
 - автоматическое копирование reverb/delay оригинального актёра;
+- автоматическое определение художественного намерения reverb/delay;
+- WPE/MCLP, оценку длинного impulse response, адаптивное фазовое вычитание и
+  другие тяжёлые dereverberation-контуры;
 - ambience refill как обязательную стадию;
 - отдельную spectral adjacency matrix без подтверждённой потребности;
 - изменение текущих VST3 identity, bus contract или LFE contract.
@@ -161,14 +168,42 @@ Baseline должен оставаться доступным для bitwise/cha
 быть главным источником spectral damage и может работать с меньшей относительной
 глубиной после появления make-space.
 
-### 4.3 Hybrid
+### 4.3 Technical Room Tail Reduction — дополнительный опциональный контур
+
+Этот контур предназначен для специального, но практически важного случая:
+
+- сухой оригинальный голос присутствует преимущественно в одном direct spatial
+  component Main;
+- в L/R/Ls/Rs или других соседних компонентах находится заметная поздняя
+  реверберация этого голоса;
+- в целевом компоненте почти нет сухого голоса, но одновременно могут звучать
+  музыка, ambience и эффекты, которые необходимо сохранить.
+
+Первый и утверждённый подход — лёгкий delayed band-envelope predictor. Он
+связывает огибающие direct-компонента Main с задержанными затухающими
+огибающими целевых компонентов и формирует мягкую time-frequency маску
+предполагаемого хвоста. Точное фазовое вычитание и восстановление room impulse
+response не выполняются.
+
+Voice используется только как activity/spatial gate и не является спектральным
+эталоном оригинального актёра. Reference для хвоста берётся из необработанного
+`Main` до spectral/wideband gain. Подробный DSP-контракт приведён в разделе 8.
+
+Режим не пытается автоматически отличить акустику пещеры или ангара от
+художественного «голоса бога». Поэтому он должен быть отключаемым,
+автоматизируемым по сценам и иметь безопасный zero/off default для старых
+instances. Добавление diffuseness/CDR допускается только как отдельный
+эксперимент и не является утверждённой стадией реализации.
+
+### 4.4 Hybrid
 
 Начальный кандидат объединения — максимум в dB, а не сумма:
 
 ```text
 FinalSpectralReduction(f, t, channel) = max(
     MakeSpaceReduction(f, t, channel),
-    OriginalBleedReduction(f, t, channel))
+    OriginalBleedReduction(f, t, channel),
+    RoomTailReduction(f, t, channel))
 ```
 
 Maximum не позволяет двум контурам случайно удвоить глубину. Weighted blend и
@@ -197,7 +232,14 @@ Main L/C/R/Ls/Rs spectra           │
 
 Main prominence → existing Variant A → Original Bleed Reduction
 
-max(Make-Space, Original Bleed)
+Main direct component before gains
+  → perceptual-band envelopes
+  → delayed decay predictor
+Main spatial target components before gains
+  → delayed envelope relation/confidence
+  → Room Tail Reduction
+
+max(Make-Space, Original Bleed, Room Tail)
   → spectral safety constraints
   → existing real non-negative FFT gains
   → existing wideband matrix gain
@@ -362,7 +404,197 @@ direct spectral stage. Отдельный поиск панорамы ориги
 панорамированный перевод. Стабильность достигается общей perceptual geometry,
 ограничением slope/delta и текущим PCE.
 
-## 8. Роль существующего weighting
+## 8. Technical Room Tail Reduction
+
+### 8.1 Цель и границы режима
+
+Для perceptual band `b`, выбранного direct-компонента Main и целевого spatial
+component `j` используется модель мощности:
+
+```text
+TargetPower[j, b, n] = BackgroundPower[j, b, n]
+                     + LateReverbPower[j, b, n]
+
+LateReverbPower[j, b, n] ≈ decayFilter[j, b](DirectPower[b, n - delay])
+```
+
+Алгоритм оценивает второе слагаемое и уменьшает его вклад мягким gain, но не
+пытается восстановить изолированный M&E. Если в том же time-frequency region
+одновременно находится ambience, часть его энергии неизбежно попадает под
+общий gain; обязательны confidence, depth cap и плавное ограничение.
+
+Ожидаемый основной случай:
+
+- в 5.1 сухая речь находится преимущественно в C или другом явно заданном
+  direct-компоненте;
+- поздние отражения находятся в L/R/Ls/Rs;
+- в целевом компоненте отсутствует или почти отсутствует синхронный сухой
+  голос;
+- direct reference остаётся доступен в другом компоненте необработанного Main.
+
+Отсутствие сухого голоса в целевом канале помогает разделению. Отсутствие
+сухого оригинального голоса во всех компонентах Main, напротив, делает
+привязку хвоста к конкретной реплике неопределённой; в таком случае режим
+должен безопасно давать нулевое подавление.
+
+В Stereo/PCE тот же подход допустим, но confidence и maximum depth должны быть
+консервативнее: музыка и ambience чаще делят L/R с предполагаемым хвостом, а
+разделение direct/diffuse менее определённо, чем в 5.1.
+
+### 8.2 Reference и пространственный контракт
+
+Reference рассчитывается по `Main` до применения любых текущих spectral и
+wideband gains. Обработанный сигнал нельзя подавать обратно в estimator: иначе
+возникнет feedback, при котором сделанное подавление меняет оценку следующего
+кадра.
+
+Существующие spatial weights Voice используются только для:
+
+1. открытия детектора во время переводной реплики;
+2. выбора соответствующего direct-компонента Main согласно принятому контракту
+   близкой панорамы;
+3. определения допустимых соседних/окружающих target-компонентов.
+
+Voice FFT bins, F0 и форманты не участвуют в оценке хвоста. Последние валидные
+spatial weights и история direct envelope удерживаются на время анализа
+реверберационного хвоста, поэтому детектор не выключается сразу после окончания
+Voice. Отдельный tracker панорамы оригинального актёра не добавляется.
+
+LFE исключён из reference, анализа и подавления. Target с заметным синхронным
+dry-like вкладом должен получать пониженный confidence: этот режим рассчитан на
+компоненты, где доминируют поздние отражения, а не на удаление прямой речи.
+
+### 8.3 Утверждённый delayed band-envelope predictor
+
+Первая реализация должна переиспользовать тот же `PerceptualBandBank`, который
+добавляется для make-space, и не выполнять новые inverse FFT. Для каждой
+perceptual band сохраняются power envelopes direct reference и target spatial
+components.
+
+Начальный predictor — небольшой банк фиксированных delayed decay states:
+
+```text
+tailCandidate[m, b, n] =
+    alpha[m] * tailCandidate[m, b, n - 1]
+  + (1 - alpha[m]) * DirectPower[b, n - delay[m]]
+
+estimatedReverb[j, b, n] =
+    scale[j, b] * combineStableCandidates(tailCandidate[:, b, n])
+```
+
+`m` представляет несколько характерных pre-delay/decay вариантов. Стартовый
+offline search должен охватить короткие комнаты и длинные хвосты порядка
+нескольких секунд; конкретные delay, T60-grid и количество states не являются
+публичным DSP-контрактом до benchmark. Банк должен оставаться малым и работать
+на band rate, а не как длинный sample-rate FIR.
+
+`scale` оценивается медленно и ограниченно только на кадрах с валидным direct
+reference. Он не должен свободно обучаться на ambience-only, sustained music,
+scene cut или technical silence. Переключение лучшего decay candidate не должно
+происходить покадрово: нужны hysteresis или плавная confidence-weighted смесь,
+чтобы избежать pumping.
+
+Базовый confidence формируется без CDR из следующих признаков:
+
+- существующая активность Voice как trigger первоначальной связи;
+- достаточный уровень и стабильность direct reference Main;
+- задержанная корреляция band envelopes direct и target;
+- соответствие target envelope одному из плавно затухающих candidates;
+- отсутствие резкого scene cut;
+- spectral continuity между соседними perceptual bands;
+- отсутствие достаточной evidence для связи даёт zero reduction.
+
+Это energy-domain prediction. Фаза target не оценивается, reverb waveform не
+вычитается, а decorrelated/modulated stereo tail допустим до тех пор, пока его
+полосовая энергия сохраняет задержанную связь с direct reference.
+
+### 8.4 Формирование gain и совместная работа контуров
+
+Начальный gain — Wiener-подобная оценка остаточной мощности с консервативным
+коэффициентом `beta`:
+
+```text
+removablePower = beta * confidence * estimatedReverb
+remainingPower = max(TargetPower - removablePower,
+                     minimumRemainingRatio * TargetPower)
+roomTailGain   = sqrt(remainingPower / max(TargetPower, epsilon))
+```
+
+Обязательны:
+
+- общий maximum depth, управляемый `Room Tail Suppression`;
+- soft knee по confidence и estimated reverb-to-target ratio;
+- perceptual-band interpolation и существующие slope/delta constraints;
+- отсутствие boost выше unity;
+- finite guards и безопасный silence path;
+- real non-negative gain через существующий WOLA path;
+- мягкий reduction вместо попытки полного null хвоста.
+
+Room Tail contour объединяется с Make-Space и Original Bleed через maximum в
+dB, а не суммой reductions. У него есть собственное состояние хвоста: после
+исчезновения текущей Voice envelope он может продолжать подавление найденной
+реверберации. При этом отдельный второй attack/release для обычного make-space
+не вводится.
+
+Scene cut, seek, prepare/reset, bus-layout change и discontinuity обязаны
+очищать decay/history/scale state. При смене панорамы новая реплика не должна
+наследовать spatial reference предыдущей.
+
+### 8.5 Realtime, tail и sleep contract
+
+Режим обязан:
+
+- работать на уже рассчитанных band powers;
+- хранить fixed-size state без allocation в audio thread;
+- не добавлять latency и не менять PDC/Lookahead reserve;
+- иметь одинаковое realtime/offline поведение;
+- при нулевом control полностью обходить predictor и сохранять baseline path;
+- продолжать работу после Voice только пока estimated tail/confidence выше
+  технического floor и не превышен защитный maximum tail interval;
+- переходить в sleep после завершения tail, а не удерживать processor активным
+  бесконечно из-за шума помещения;
+- не обновлять `scale` на собственном уже обработанном output.
+
+Банк decay states и maximum tail interval должны корректно пересчитываться из
+миллисекунд/секунд в frame count для всех sample rates и FFT x1/x2/x4.
+
+### 8.6 Parameter и product contract
+
+Первая итерация реализуется как hidden/developer mode без host-visible
+parameter. После успешного прослушивания минимальный публичный контракт — один
+автоматизируемый macro control `Room Tail Suppression`:
+
+- `0` полностью отключает analysis и gain;
+- увеличение значения одновременно разрешает большую уверенность/глубину, но
+  не отключает safety cap;
+- старые states и instances загружаются со значением `0`;
+- управление предназначено для автоматизации по сценам;
+- отдельные публичные T60, pre-delay, diffuseness и adaptation controls не
+  добавляются без доказанной необходимости.
+
+Режим подавляет reverb оригинальной реплики, но не создаёт reverb переводного
+Voice. Подбор пространства Voice остаётся задачей звукорежиссёра.
+
+### 8.7 Неутверждённый эксперимент: diffuseness/CDR confidence
+
+После готового envelope-only baseline допускается отдельный A/B experiment:
+добавить межканальную coherence/diffuseness или CDR-подобную оценку только как
+множитель confidence. Гипотеза: хвост речи чаще выглядит diffuse, а синхронный
+direct content — coherent.
+
+Эксперимент не считается частью утверждённого плана реализации, потому что:
+
+- ambience и широкая музыка также могут быть diffuse;
+- каналы готового Stereo/5.1 mix не являются физическим microphone array;
+- synthetic reverb, decorrelation и mastering нарушают стандартные CDR-модели;
+- дополнительная матричная/ковариационная оценка увеличивает CPU и сложность.
+
+Он принимается только если на одинаковом envelope predictor и depth статистически
+снижает false positive reduction ambience/music, не пропускает слышимые room
+tails и укладывается в CPU budget. Отсутствие выигрыша означает полное удаление
+CDR-ветки и никак не блокирует shipping envelope-only режима.
+
+## 9. Роль существующего weighting
 
 Существующие `Weight Frequency`, `Weight Gain` и `Weight Q` — публичные
 автоматизируемые параметры и не должны быть удалены или переименованы на уровне
@@ -383,9 +615,9 @@ IDs и state compatibility.
 
 Weighting node, запланированная для 1.0, не должна заранее менять DSP-смысл.
 
-## 9. Режимы прототипа и будущий parameter contract
+## 10. Режимы прототипа и будущий parameter contract
 
-### 9.1 До принятия алгоритма
+### 10.1 До принятия алгоритма
 
 Не добавлять новые host-visible parameters на первой исследовательской итерации.
 Использовать compile-time или developer-only configuration для сравнения:
@@ -395,9 +627,14 @@ Weighting node, запланированная для 1.0, не должна з�
 - `HYBRID_MAX`;
 - при необходимости `HYBRID_BLEND`.
 
+После фиксации основного hybrid baseline отдельно добавляется
+`ROOM_TAIL_ENVELOPE`. Он не должен смешиваться с первым make-space A/B, иначе
+будет невозможно определить источник слышимого изменения. CDR-вариант не
+входит в обязательный список prototype modes.
+
 Это предотвращает преждевременное закрепление parameter IDs и автоматизации.
 
-### 9.2 После успешного прослушивания
+### 10.2 После успешного прослушивания
 
 Минимальный кандидат публичного управления:
 
@@ -405,6 +642,8 @@ Weighting node, запланированная для 1.0, не должна з�
 - один strategy control `CLASSIC / MAKE SPACE / HYBRID`;
 - один `Target Margin` или более музыкально названный macro control;
 - существующий weighting сохраняется как Focus/Original Bleed bias;
+- после отдельного успешного Room Tail prototype — один автоматизируемый
+  `Room Tail Suppression` с zero/off default для старых states;
 - дополнительные expert controls не добавляются без доказанной пользы.
 
 Для старых состояний strategy должен загружаться как `CLASSIC`, если новый
@@ -414,7 +653,7 @@ parameter отсутствует. Новый default для новых экзе�
 
 Перед фиксацией layout обязательны state migration и automation tests.
 
-## 10. Realtime, CPU, memory и latency
+## 11. Realtime, CPU, memory и latency
 
 Новый алгоритм обязан:
 
@@ -426,8 +665,10 @@ parameter отсутствует. Новый default для новых экзе�
 - сохранять текущую FFT geometry и reported PDC;
 - не менять фиксированный 50 ms Lookahead reserve;
 - полностью прекращать make-space analysis при technical silence Voice после
-  существующего tail contract;
+  существующего tail contract; Room Tail analysis является отдельным
+  исключением и может продолжаться только по правилам раздела 8.5;
 - обходить лишнюю работу при нулевой make-space/overall spectral depth;
+- полностью обходить decay predictor при нулевом `Room Tail Suppression`;
 - не выполнять analysis только ради закрытого GUI;
 - сохранять одинаковое realtime/offline поведение.
 
@@ -436,7 +677,7 @@ parameter отсутствует. Новый default для новых экзе�
 Stereo/Surround и GUI open/closed. Относительное увеличение должно быть принято
 по измерениям; произвольный абсолютный процент в этом документе не фиксируется.
 
-## 11. План реализации по этапам
+## 12. План реализации по этапам
 
 ### Phase 0 — immutable baseline
 
@@ -476,7 +717,7 @@ Stereo/Surround и GUI open/closed. Относительное увеличен�
 2. Объединять reductions через maximum.
 3. Сравнить одинаковые total depth и Voice levels.
 4. Проверить возможность уменьшить wideband depth.
-5. Сравнить роли weighting из раздела 8.
+5. Сравнить роли weighting из раздела 9.
 
 Результат: кандидат, выполняющий основную цель и сохраняющий дополнительное
 снижение оригинальной речи.
@@ -511,11 +752,29 @@ Stereo/Surround и GUI open/closed. Относительное увеличен�
 4. Windows и macOS Debug/Release builds.
 5. CPU profiling и silence optimization audit.
 6. Blind listening comparison с 1.0.
-7. Release только после выполнения acceptance criteria.
+7. Release основного make-space только после выполнения core acceptance
+   criteria из раздела 15.1.
 
-## 12. Тестовая стратегия
+### Phase 7 — ROOM_TAIL_ENVELOPE после основного make-space
 
-### 12.1 Unit tests perceptual bands
+1. Зафиксировать hybrid baseline и не менять одновременно его tuning.
+2. Добавить сбор pre-gain direct/target band envelopes без изменения output.
+3. Реализовать малый банк delayed decay states из раздела 8.3.
+4. Добавить envelope relation confidence, scale freeze и scene-cut reset.
+5. Сформировать мягкий Room Tail gain и объединить contours через maximum.
+6. Реализовать независимый tail/sleep contract и проверку seek/reset.
+7. Провести developer A/B на размеченном Stereo/5.1 corpus с wet-only targets.
+8. Если acceptance criteria из раздела 15.2 выполнены, добавить один
+   автоматизируемый macro control и state migration с zero default.
+9. Не добавлять diffuseness/CDR в production path в рамках этой фазы.
+
+Результат: лёгкое опциональное подавление технического room tail оригинальной
+реплики без WPE/MCLP, длинного adaptive FIR и фазового вычитания. Неудача
+последующего CDR-эксперимента не влияет на статус этой фазы.
+
+## 13. Тестовая стратегия
+
+### 13.1 Unit tests perceptual bands
 
 Проверить:
 
@@ -531,7 +790,7 @@ Stereo/Surround и GUI open/closed. Относительное увеличен�
 - корректную интерполяцию обратно к FFT bins;
 - отсутствие heap allocation в process path.
 
-### 12.2 DSP characterization
+### 13.2 DSP characterization
 
 Минимальные synthetic cases:
 
@@ -553,7 +812,7 @@ Stereo/Surround и GUI open/closed. Относительное увеличен�
 является acceptance case. Такой материал можно использовать только как
 diagnostic stress test, а не как основание добавлять auto-tracking.
 
-### 12.3 Latency и reconstruction
+### 13.3 Latency и reconstruction
 
 Для каждого mode/sample rate/FFT size:
 
@@ -565,18 +824,48 @@ diagnostic stress test, а не как основание добавлять aut
 - PDC не меняется из-за spectral strategy;
 - realtime и offline output совпадают в пределах tolerance.
 
-### 12.4 State и compatibility
+### 13.4 State и compatibility
 
 - состояние 1.0 без новых parameters загружается как CLASSIC;
 - round-trip новых parameters стабилен;
 - старые Weight IDs сохраняют значения;
 - choice ordering не меняется без migration;
 - automation не вызывает discontinuity;
-- pending DSP configuration не теряет strategy state.
+- pending DSP configuration не теряет strategy state;
+- состояние без `Room Tail Suppression` загружается со значением `0`;
+- round-trip и automation Room Tail control не оставляют активный decay state
+  после reset/off.
 
-## 13. Listening и measurement corpus
+### 13.5 Room Tail tests
 
-### 13.1 Обязательные материалы
+Для Room Tail нужен отдельный synthetic и stem-based набор, где известны dry
+reference, добавленный wet tail и независимый background. Минимальная matrix:
+
+- direct speech в C, wet-only копия через известный room IR в L/R/Ls/Rs;
+- разные pre-delay и frequency-dependent T60 от короткой комнаты до нескольких
+  секунд;
+- decorrelated stereo/surround reverb и умеренно модулированный tail;
+- речь заканчивается, а хвост продолжается при Voice silence;
+- ambience-only и music-only без direct reference дают zero reduction;
+- dry reference без reverb target даёт zero reduction;
+- reverb target одновременно с room tone, wind, crowd, tonal music и Foley;
+- сильный dry-like сигнал в target снижает confidence;
+- две близкие реплики с разными spatial weights не смешивают history;
+- scene cut, transport seek, reset и sample-rate/FFT change очищают history;
+- автоматизация `Room Tail Suppression` не создаёт click и не оставляет stale
+  gain;
+- tail завершается и processor возвращается в sleep;
+- Stereo/PCE работает консервативнее, Surround не затрагивает LFE;
+- realtime/offline output совпадает в пределах tolerance;
+- zero control сохраняет baseline output и CPU fast path.
+
+Измерять отдельно attenuation известного wet stem и повреждение независимого
+background stem. Общий спад уровня target channel не считается доказательством
+качества без этих двух раздельных метрик.
+
+## 14. Listening и measurement corpus
+
+### 14.1 Обязательные материалы
 
 Нужны короткие размеченные фрагменты:
 
@@ -591,13 +880,16 @@ diagnostic stress test, а не как основание добавлять aut
 - dialogue над tonal music;
 - dialogue над percussion/Foley;
 - плотный full mix;
-- сцены с заметным reverb, но без требования его автоматического копирования.
+- сцены с заметным техническим room reverb: пещера, пустой ангар, большой зал;
+- художественные reverb/delay cases, на которых Room Tail должен быть вручную
+  отключён;
+- раздельные direct/wet/background stems хотя бы для части Room Tail corpus.
 
 Если доступны исходные dialogue/M&E stems, их следует использовать только как
 ground truth для разработки и измерений. Runtime-плагин не должен требовать эти
 stems.
 
-### 13.2 Что слушать
+### 14.2 Что слушать
 
 Всегда сравнивать при loudness-matched Voice:
 
@@ -605,8 +897,9 @@ stems.
 2. 1.0 CLASSIC + Voice;
 3. MAKE_SPACE_ONLY + Voice;
 4. HYBRID_MAX + Voice;
-5. solo Processed Main;
-6. Delta/removed content.
+5. HYBRID_MAX + ROOM_TAIL_ENVELOPE + Voice на room-tail material;
+6. solo Processed Main;
+7. Delta/removed content.
 
 Основные субъективные вопросы:
 
@@ -618,8 +911,11 @@ stems.
 - не становится ли сцена неоправданно «глухой»?
 - Original Bleed действительно помогает или только повреждает фон?
 - можно ли уменьшить wideband depth относительно 1.0?
+- уменьшается ли слышимый хвост оригинального актёра после окончания слова?
+- остаются ли room tone, crowd, wind и diffuse music непрерывными?
+- не создаёт ли Room Tail pumping на длинных decay и соседних репликах?
 
-### 13.3 Измерения
+### 14.3 Измерения
 
 Использовать как вспомогательные, а не единственные критерии:
 
@@ -629,6 +925,10 @@ stems.
 - stereo correlation и width;
 - transient crest/flux loss;
 - residual original-dialogue projection при наличии ground truth;
+- attenuation известного wet-only reverb stem после окончания direct speech;
+- false-positive attenuation независимого ambience/music stem при активном
+  Room Tail;
+- delayed envelope confidence на true-tail и ambience-only segments;
 - M&E distortion при наличии ground truth;
 - active/silent CPU, allocations и worst-frame time;
 - measured PDC и offline/realtime null.
@@ -636,7 +936,9 @@ stems.
 Перед сравнением defaults все варианты должны иметь сопоставимую максимальную
 depth и loudness, иначе listening result будет отражать уровень, а не алгоритм.
 
-## 14. Acceptance criteria
+## 15. Acceptance criteria
+
+### 15.1 Core Make-Space/Original Bleed
 
 Post-1.0 enhancement принимается только если одновременно выполнено:
 
@@ -657,7 +959,27 @@ Post-1.0 enhancement принимается только если одновре
 не добавляется в публичный UI. Наличие реализованного прототипа само по себе не
 является основанием для shipping.
 
-## 15. Риски и способы ограничения
+### 15.2 Technical Room Tail Reduction
+
+Room Tail принимается отдельно и не блокирует release основного make-space.
+Для его shipping должны одновременно выполняться условия:
+
+1. Envelope-only Room Tail не активируется без надёжной delayed relation с
+   direct reference Main.
+2. На размеченных wet-only cases он слышимо и измеримо уменьшает хвост без
+   WPE/MCLP или phase cancellation.
+3. Повреждение независимых ambience/music/Foley stems не превышает принятый
+   listening/measurement budget при сопоставимой глубине подавления хвоста.
+4. Zero Room Tail control сохраняет baseline output, PDC и fast path, а старые
+   states загружаются с режимом off.
+5. Tail state корректно завершается, переживает automation/transport reset без
+   stale gain и возвращает processor в sleep.
+
+Если эти критерии не выполнены, `ROOM_TAIL_ENVELOPE` остаётся hidden prototype
+или удаляется. Это не отменяет принятый HYBRID_MAX и не является основанием
+добавлять более тяжёлый dereverberation-контур.
+
+## 16. Риски и способы ограничения
 
 | Риск | Причина | Ограничение |
 |---|---|---|
@@ -670,10 +992,15 @@ Post-1.0 enhancement принимается только если одновре
 | Потеря coherent music | одинаковая spatial/frequency область | minimum required margin, hybrid tuning |
 | Stereo wobble | независимые channel masks | общая geometry, temporal/slope constraints |
 | Рост CPU | дополнительные band accumulations | reuse FFT, precomputed weights, sleep/bypass |
+| Room Tail подавляет ambience | diffuse background совпал с decay envelope | delayed relation confidence, depth cap, soft gain |
+| Room Tail обучился на музыке | direct reference загрязнён Main content | Voice trigger, slow bounded scale, freeze/reset |
+| Хвост обрывается или pumping | нестабильный выбор decay candidate | малый decay bank, hysteresis/blend, frame delta limit |
+| Художественный reverb удалён | намерение невозможно определить по сигналу | opt-in control и automation звукорежиссёра |
+| Processor не засыпает | noise поддерживает слабый tail state | confidence floor и maximum tail interval |
 | Поломка старых проектов | новый parameter schema | CLASSIC fallback и migration tests |
 | Scope creep в source separation | попытка найти актёра в Main | держать make-space objective и non-goals |
 
-## 16. Decision log
+## 17. Decision log
 
 Следующие решения считаются принятыми и не требуют повторного расследования без
 новых результатов прослушивания:
@@ -683,7 +1010,8 @@ Post-1.0 enhancement принимается только если одновре
 2. Sound engineer отвечает за близкую панораму Voice и оригинала.
 3. Случай заметно различающейся панорамы исключён из product scope.
 4. Auto spatial tracking оригинального актёра не нужен.
-5. Sound engineer отвечает за reverb/delay и художественное пространство Voice.
+5. Sound engineer создаёт reverb/delay переводного Voice и решает, в каких
+   сценах включать подавление room tail оригинала.
 6. Разная длина реплик и короткие release traces — допустимые nice-to-have
    проблемы.
 7. Ambience refill не является базовой стадией: сначала нужно минимизировать
@@ -697,8 +1025,18 @@ Post-1.0 enhancement принимается только если одновре
 13. Первый hybrid candidate объединяет contours через maximum.
 14. Новые host parameters не фиксируются до успешного hidden prototype.
 15. Финальная оценка всегда проводится на `Processed Main + audible Voice`.
+16. Technical Room Tail Reduction принят как отдельный лёгкий post-make-space
+    режим на delayed perceptual-band envelopes Main.
+17. Room Tail reference берётся из pre-gain Main; Voice используется только как
+    activity/spatial gate, но не как спектральный образец оригинального актёра.
+18. WPE/MCLP, длинный adaptive impulse-response estimator и phase cancellation
+    не входят в утверждённую реализацию.
+19. Алгоритм не классифицирует технический и художественный reverb; режим
+    является opt-in и автоматизируется звукорежиссёром.
+20. Diffuseness/CDR не является утверждённым шагом и допускается только как
+    изолированный эксперимент после envelope-only baseline.
 
-## 17. Открытые вопросы для экспериментов
+## 18. Открытые вопросы для экспериментов
 
 Эти вопросы не следует решать повторным общим обсуждением; для каждого нужен
 контролируемый A/B prototype:
@@ -714,12 +1052,22 @@ Post-1.0 enhancement принимается только если одновре
 9. Можно ли уменьшить wideband depth и сохранить разборчивость?
 10. Нужен ли публичный strategy switch или HYBRID может стать единственным
     новым default для новых instances?
+11. Какой малый набор pre-delay/T60 candidates покрывает corpus без заметного
+    роста CPU?
+12. Какая delayed-envelope confidence curve лучше отделяет room tail от room
+    tone, sustained music и crowd?
+13. Какой maximum tail interval не обрывает длинные помещения и гарантирует
+    возврат в sleep?
+14. Достаточен ли один `Room Tail Suppression`, или автоматизация требует
+    отдельного control чувствительности? Второй control не добавлять без A/B.
+15. Экспериментально: уменьшает ли diffuseness/CDR multiplier false positives
+    относительно envelope-only baseline на готовых Stereo/5.1 mixes?
 
 Ответ по каждому пункту фиксируется в этом документе или следующем architecture
 decision record вместе с corpus, настройками, измерениями и результатом
 прослушивания.
 
-## 18. Рекомендуемая точка старта после 1.0
+## 19. Рекомендуемая точка старта после 1.0
 
 Первый post-1.0 coding increment должен быть намеренно маленьким:
 
@@ -729,6 +1077,10 @@ decision record вместе с corpus, настройками, измерени
 4. подтвердить отсутствие дополнительных allocations и измерить изменение CPU;
 5. сохранить output baseline неизменным;
 6. только после этого добавить скрытый MAKE_SPACE_ONLY gain path.
+
+Room Tail не входит в первый coding increment. Он начинается отдельной Phase 7
+после того, как HYBRID_MAX и perceptual-band infrastructure стабилизированы, и
+переиспользует уже проверенный band accumulator.
 
 Не начинать с UI, новых host parameters, ambience reconstruction, auto dialogue
 detection или рефакторинга всего `SpectralSuppressor.h`. Сначала должен быть
