@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(SmartDucking VERSION 0.2.0 LANGUAGES C CXX)
+project(SmartDucking VERSION 1.0.0 LANGUAGES C CXX)
 
 if (APPLE)
     enable_language(OBJCXX)
@@ -42,7 +42,7 @@ else()
 endif()
 
 juce_add_plugin(SmartDucking
-    VERSION 0.2.0
+    VERSION 1.0.0
     COMPANY_NAME "OnWave"
     COMPANY_WEBSITE "https://onwavedub.org"
     BUNDLE_ID "org.onwavedub.SmartDucking"
@@ -76,10 +76,13 @@ target_sources(SmartDucking PRIVATE
     Source/ParameterIds.h
     Source/DiagnosticLogger.h
     Source/DiagnosticLogger.cpp
+    Source/FactoryPresets.h
     Source/LcrDuckMatrix.h
     Source/LinkwitzRiley8Crossover.h
+    Source/PceHistory.h
     Source/SidechainClassifier.h
     Source/SidechainEnvelope.h
+    Source/SpectralFrameSmoothers.h
     Source/SpectralSuppressor.h
     Source/PluginEditor.h
     Source/PluginEditor.cpp
@@ -170,6 +173,32 @@ if (APPLE)
 endif()
 
 option(SMART_DUCKING_BUILD_TESTS "Build the Smart Ducking scaffold tests" ON)
+set(SMART_DUCKING_PLUGINVAL_EXECUTABLE "" CACHE FILEPATH
+    "Optional pluginval executable used by the SmartDuckingPluginval target")
+
+if (SMART_DUCKING_PLUGINVAL_EXECUTABLE)
+    if (NOT EXISTS "${SMART_DUCKING_PLUGINVAL_EXECUTABLE}")
+        message(FATAL_ERROR
+            "SMART_DUCKING_PLUGINVAL_EXECUTABLE does not exist: ${SMART_DUCKING_PLUGINVAL_EXECUTABLE}")
+    endif()
+
+    set(smart_ducking_pluginval_output "${CMAKE_CURRENT_BINARY_DIR}/pluginval-results")
+    if (APPLE)
+        set(smart_ducking_pluginval_target "$<TARGET_BUNDLE_DIR:SmartDucking_VST3>")
+    else()
+        set(smart_ducking_pluginval_target "$<TARGET_FILE:SmartDucking_VST3>")
+    endif()
+    add_custom_target(SmartDuckingPluginval
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${smart_ducking_pluginval_output}"
+        COMMAND "${SMART_DUCKING_PLUGINVAL_EXECUTABLE}"
+            --strictness-level 5
+            --validate-in-process
+            --output-dir "${smart_ducking_pluginval_output}"
+            "${smart_ducking_pluginval_target}"
+        DEPENDS SmartDucking_VST3
+        USES_TERMINAL
+        VERBATIM)
+endif()
 
 if (SMART_DUCKING_BUILD_TESTS)
     enable_testing()
@@ -181,10 +210,13 @@ if (SMART_DUCKING_BUILD_TESTS)
         Source/ParameterIds.h
         Source/DiagnosticLogger.h
         Source/DiagnosticLogger.cpp
+        Source/FactoryPresets.h
         Source/LcrDuckMatrix.h
         Source/LinkwitzRiley8Crossover.h
+        Source/PceHistory.h
         Source/SidechainClassifier.h
         Source/SidechainEnvelope.h
+        Source/SpectralFrameSmoothers.h
         Source/SpectralSuppressor.h
         Source/PluginEditor.h
         Source/PluginEditor.cpp
@@ -210,6 +242,31 @@ if (SMART_DUCKING_BUILD_TESTS)
         juce::juce_recommended_warning_flags)
 
     add_test(NAME SmartDucking.Processor COMMAND SmartDuckingTests)
+
+    juce_add_console_app(SmartDuckingBenchmark
+        PRODUCT_NAME "Smart Ducking DSP Benchmark")
+    target_sources(SmartDuckingBenchmark PRIVATE Tests/PerformanceBenchmark.cpp)
+    target_include_directories(SmartDuckingBenchmark PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/Source")
+    target_compile_definitions(SmartDuckingBenchmark PRIVATE
+        SMART_DUCKING_ENABLE_DIAGNOSTICS=0
+        JucePlugin_Name="Smart Ducking"
+        JucePlugin_IsSynth=0
+        JucePlugin_Enable_ARA=0
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_VST3_CAN_REPLACE_VST2=0)
+    target_link_libraries(SmartDuckingBenchmark PRIVATE
+        SmartDucking
+        juce::juce_audio_utils
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)
+    if (MSVC)
+        target_compile_options(SmartDuckingBenchmark PRIVATE /wd4005)
+    elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(SmartDuckingBenchmark PRIVATE -Wno-macro-redefined)
+    endif()
 
     if (WIN32 OR APPLE)
         add_executable(SmartDuckingVST3FactoryTests)

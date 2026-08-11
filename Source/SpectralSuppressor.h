@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -12,8 +13,10 @@
 #include <juce_dsp/juce_dsp.h>
 
 #include "LcrDuckMatrix.h"
+#include "PceHistory.h"
 #include "SidechainClassifier.h"
 #include "SidechainEnvelope.h"
+#include "SpectralFrameSmoothers.h"
 
 namespace smart_ducking
 {
@@ -217,7 +220,7 @@ public:
         lastMaximumReductionDb.fill (0.0f);
         lastWidebandReductionDb.fill (0.0f);
         lastLcrPeaks = {};
-        smoothedMatrixControls = {};
+        matrixControlSmoother.reset();
         processedFftFrameCount = 0;
         processedOutputFrameCount = 0;
         processedSidechainFftCount = 0;
@@ -249,10 +252,10 @@ public:
         voiceIsStereo = true;
         heavyPathSleeping = true;
         heavyPathActive.store (false, std::memory_order_release);
-        currentCrossoverStageMix = parameters.crossoverStageMix;
-        currentWidebandStageMix = parameters.widebandStageMix;
-        currentSpectralStageMix = parameters.spectralStageMix;
-        currentCrossoverDeltaMix = parameters.crossoverDelta ? 1.0f : 0.0f;
+        crossoverStageSmoother.reset (parameters.crossoverStageMix);
+        widebandStageSmoother.reset (parameters.widebandStageMix);
+        spectralStageSmoother.reset (parameters.spectralStageMix);
+        crossoverDeltaSmoother.reset (parameters.crossoverDelta ? 1.0f : 0.0f);
     }
 
     void setResolutionIndex (int newResolutionIndex) noexcept
@@ -320,16 +323,24 @@ public:
 
     void setParameters (Parameters newParameters) noexcept
     {
-        const auto envelopeTimesChanged = newParameters.attackMs != parameters.attackMs
-                                       || newParameters.holdMs != parameters.holdMs
-                                       || newParameters.releaseMs != parameters.releaseMs;
+        const auto changed = [] (float left, float right) noexcept
+        {
+            return std::bit_cast<std::uint32_t> (left)
+                != std::bit_cast<std::uint32_t> (right);
+        };
+        const auto envelopeTimesChanged = changed (newParameters.attackMs,
+                                                   parameters.attackMs)
+                                       || changed (newParameters.holdMs,
+                                                   parameters.holdMs)
+                                       || changed (newParameters.releaseMs,
+                                                   parameters.releaseMs);
 
-        if (newParameters.weightFrequencyHz != parameters.weightFrequencyHz
-            || newParameters.weightGainDb != parameters.weightGainDb
-            || newParameters.weightQ != parameters.weightQ)
+        if (changed (newParameters.weightFrequencyHz, parameters.weightFrequencyHz)
+            || changed (newParameters.weightGainDb, parameters.weightGainDb)
+            || changed (newParameters.weightQ, parameters.weightQ))
             weightingCurveDirty = true;
 
-        if (newParameters.crossoverHz != parameters.crossoverHz)
+        if (changed (newParameters.crossoverHz, parameters.crossoverHz))
             economyCrossoverCurveDirty = true;
 
         parameters = newParameters;
@@ -696,32 +707,6 @@ private:
         }
     }
 
-    struct PceHistory
-    {
-        void resize (int bins)
-        {
-            crossReal.resize (static_cast<size_t> (bins));
-            crossImaginary.resize (static_cast<size_t> (bins));
-            powerLeft.resize (static_cast<size_t> (bins));
-            powerRight.resize (static_cast<size_t> (bins));
-            rawCentreFactor.resize (static_cast<size_t> (bins));
-        }
-
-        void clear() noexcept
-        {
-            std::fill (crossReal.begin(), crossReal.end(), 0.0f);
-            std::fill (crossImaginary.begin(), crossImaginary.end(), 0.0f);
-            std::fill (powerLeft.begin(), powerLeft.end(), 0.0f);
-            std::fill (powerRight.begin(), powerRight.end(), 0.0f);
-        }
-
-        std::vector<float> crossReal;
-        std::vector<float> crossImaginary;
-        std::vector<float> powerLeft;
-        std::vector<float> powerRight;
-        std::vector<float> rawCentreFactor;
-    };
-
     [[nodiscard]] bool shouldUpdateVisualisationThisFrame() noexcept
     {
         if (! visualisationEnabled.load (std::memory_order_acquire))
@@ -755,29 +740,23 @@ private:
         auto diagnosticStageStart = diagnosticFrameStart;
 #endif
         const auto retainedSamples = fftSize - hopSize;
-        const auto smoothingStep = juce::jlimit (
-            0.0f,
-            1.0f,
-            static_cast<float> (hopSize / sampleRate) / stageTransitionSeconds);
-        const auto advanceStageMix = [smoothingStep] (float current, float target) noexcept
-        {
-            const auto difference = juce::jlimit (-smoothingStep,
-                                                  smoothingStep,
-                                                  target - current);
-            return current + difference;
-        };
-        currentCrossoverStageMix = advanceStageMix (
-            currentCrossoverStageMix,
-            juce::jlimit (0.0f, 1.0f, parameters.crossoverStageMix));
-        currentWidebandStageMix = advanceStageMix (
-            currentWidebandStageMix,
-            juce::jlimit (0.0f, 1.0f, parameters.widebandStageMix));
-        currentSpectralStageMix = advanceStageMix (
-            currentSpectralStageMix,
-            juce::jlimit (0.0f, 1.0f, parameters.spectralStageMix));
-        currentCrossoverDeltaMix = advanceStageMix (
-            currentCrossoverDeltaMix,
-            parameters.crossoverDelta ? 1.0f : 0.0f);
+        const auto frameDurationSeconds = static_cast<float> (hopSize / sampleRate);
+        const auto currentCrossoverStageMix = crossoverStageSmoother.process (
+            juce::jlimit (0.0f, 1.0f, parameters.crossoverStageMix),
+            frameDurationSeconds,
+            stageTransitionSeconds);
+        const auto currentWidebandStageMix = widebandStageSmoother.process (
+            juce::jlimit (0.0f, 1.0f, parameters.widebandStageMix),
+            frameDurationSeconds,
+            stageTransitionSeconds);
+        const auto currentSpectralStageMix = spectralStageSmoother.process (
+            juce::jlimit (0.0f, 1.0f, parameters.spectralStageMix),
+            frameDurationSeconds,
+            stageTransitionSeconds);
+        const auto currentCrossoverDeltaMix = crossoverDeltaSmoother.process (
+            parameters.crossoverDelta ? 1.0f : 0.0f,
+            frameDurationSeconds,
+            stageTransitionSeconds);
 
         shiftAnalysisFrame (analysisInput, inputHop, retainedSamples, mainIsStereo);
         shiftAnalysisFrame (sidechainAnalysisInput,
@@ -904,7 +883,7 @@ private:
 
                 lastMaximumReductionDb.fill (0.0f);
                 lastWidebandReductionDb.fill (0.0f);
-                smoothedMatrixControls = {};
+                matrixControlSmoother.reset();
                 clearPceHistory();
                 heavyPathSleeping = true;
                 heavyPathActive.store (false, std::memory_order_release);
@@ -1033,18 +1012,10 @@ private:
                 voiceEnvelopes[static_cast<size_t> (channel)].processSample (
                     detectorTargets.get (channel)));
 
-        const auto targetControls = parameters.duckMatrix.apply (voiceControls);
-        const auto matrixSmoothingCoefficient = 1.0f - std::exp (
-            -static_cast<float> (hopSize / sampleRate) / matrixSmoothingSeconds);
-
-        for (int channel = 0; channel < lcrChannels; ++channel)
-        {
-            const auto current = smoothedMatrixControls.get (channel);
-            smoothedMatrixControls.set (
-                channel,
-                current + matrixSmoothingCoefficient
-                              * (targetControls.get (channel) - current));
-        }
+        const auto smoothedMatrixControls = matrixControlSmoother.process (
+            parameters.duckMatrix.apply (voiceControls),
+            frameDurationSeconds,
+            matrixSmoothingSeconds);
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
         diagnosticStageEnd = juce::Time::getHighResolutionTicks();
         diagnosticControlTicks.fetch_add (
@@ -1107,6 +1078,8 @@ private:
                         channel,
                         transform,
                         lastWidebandReductionDb[static_cast<size_t> (channel)],
+                        currentCrossoverStageMix,
+                        currentCrossoverDeltaMix,
                         shouldUpdateVisualisation);
             }
             else if (! combineNormalSpectralAndWideGain
@@ -1304,6 +1277,8 @@ private:
     void applyEconomyCrossoverGain (int channel,
                                     std::vector<float>& transform,
                                     float widebandReductionDb,
+                                    float crossoverStageMix,
+                                    float crossoverDeltaMix,
                                     bool updateDisplayMask) noexcept
     {
         updateEconomyCrossoverCurveCache();
@@ -1316,8 +1291,8 @@ private:
         for (int bin = 0; bin < bins; ++bin)
         {
             const auto crossoverHighWeight = cachedEconomyHighWeight[static_cast<size_t> (bin)];
-            const auto highWeight = 1.0f - currentCrossoverStageMix
-                                  + currentCrossoverStageMix * crossoverHighWeight;
+            const auto highWeight = 1.0f - crossoverStageMix
+                                  + crossoverStageMix * crossoverHighWeight;
             const auto lowWeight = 1.0f - highWeight;
             const auto spectralGain = juce::Decibels::decibelsToGain (
                 -juce::jmax (0.0f, spectralReduction[static_cast<size_t> (bin)]));
@@ -1325,7 +1300,7 @@ private:
                                   + highWeight * spectralGain * widebandGain;
             const auto crossoverDeltaGain = 1.0f - crossoverHighWeight;
             const auto combinedGain = normalGain
-                                    + currentCrossoverDeltaMix
+                                    + crossoverDeltaMix
                                           * (crossoverDeltaGain - normalGain);
             const auto offset = static_cast<size_t> (2 * bin);
             transform[offset] *= combinedGain;
@@ -2035,7 +2010,7 @@ private:
     std::array<PceHistory, 2> pceHistories;
     SidechainClassifier sidechainClassifier;
     std::array<SidechainEnvelope, lcrChannels> voiceEnvelopes;
-    LcrDuckMatrix::Controls smoothedMatrixControls;
+    SpatialControlSmoother matrixControlSmoother;
     std::array<float, lcrChannels> lastMaximumReductionDb {};
     std::array<float, lcrChannels> lastWidebandReductionDb {};
     LcrSample lastLcrPeaks;
@@ -2076,10 +2051,10 @@ private:
     bool mainIsStereo = true;
     bool voiceIsStereo = true;
     bool heavyPathSleeping = true;
-    float currentCrossoverStageMix = 1.0f;
-    float currentWidebandStageMix = 1.0f;
-    float currentSpectralStageMix = 1.0f;
-    float currentCrossoverDeltaMix = 0.0f;
+    LinearFrameSmoother crossoverStageSmoother;
+    LinearFrameSmoother widebandStageSmoother;
+    LinearFrameSmoother spectralStageSmoother;
+    LinearFrameSmoother crossoverDeltaSmoother;
     bool weightingCurveDirty = true;
     bool economyMode = false;
     bool economyCrossoverCurveDirty = true;

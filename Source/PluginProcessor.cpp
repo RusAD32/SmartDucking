@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 
+#include "FactoryPresets.h"
 #include "ParameterIds.h"
 #include "PluginEditor.h"
 
@@ -151,6 +152,7 @@ SmartDuckingAudioProcessor::SmartDuckingAudioProcessor (smart_ducking::PluginVar
 
     parameters.addParameterListener (fftResolution, this);
     parameters.addParameterListener (processingMode, this);
+    initialiseComparisonSlots();
     startTimerHz (20);
 }
 
@@ -165,6 +167,95 @@ SmartDuckingAudioProcessor::~SmartDuckingAudioProcessor()
 const juce::String SmartDuckingAudioProcessor::getName() const
 {
     return isSurroundVariant() ? "Smart Ducking (Surround)" : "Smart Ducking (Stereo)";
+}
+
+int SmartDuckingAudioProcessor::getNumPrograms()
+{
+    return static_cast<int> (smart_ducking::factoryPresets.size());
+}
+
+int SmartDuckingAudioProcessor::getCurrentProgram()
+{
+    return currentFactoryProgram.load (std::memory_order_relaxed);
+}
+
+void SmartDuckingAudioProcessor::setCurrentProgram (int index)
+{
+    index = juce::jlimit (0, getNumPrograms() - 1, index);
+    const auto& preset = smart_ducking::factoryPresets[static_cast<size_t> (index)];
+
+    for (auto* parameter : getParameters())
+        if (parameter != nullptr)
+            parameter->setValueNotifyingHost (parameter->getDefaultValue());
+
+    for (const auto& value : preset.values)
+        if (auto* parameter = parameters.getParameter (value.parameterId))
+            parameter->setValueNotifyingHost (parameter->convertTo0to1 (value.rawValue));
+
+    currentFactoryProgram.store (index, std::memory_order_relaxed);
+    captureComparisonSlot (currentComparisonSlot.load (std::memory_order_relaxed));
+}
+
+const juce::String SmartDuckingAudioProcessor::getProgramName (int index)
+{
+    return index >= 0 && index < getNumPrograms()
+        ? smart_ducking::factoryPresets[static_cast<size_t> (index)].name
+        : juce::String {};
+}
+
+void SmartDuckingAudioProcessor::initialiseComparisonSlots()
+{
+    const auto parameterCount = getParameters().size();
+    for (auto& slot : comparisonSlots)
+        slot.resize (static_cast<size_t> (parameterCount));
+
+    captureComparisonSlot (0);
+    captureComparisonSlot (1);
+}
+
+void SmartDuckingAudioProcessor::captureComparisonSlot (int slot)
+{
+    if (slot < 0 || slot >= static_cast<int> (comparisonSlots.size()))
+        return;
+
+    auto& snapshot = comparisonSlots[static_cast<size_t> (slot)];
+    const auto& processorParameters = getParameters();
+
+    if (snapshot.size() != static_cast<size_t> (processorParameters.size()))
+        snapshot.resize (static_cast<size_t> (processorParameters.size()));
+
+    for (int index = 0; index < processorParameters.size(); ++index)
+        snapshot[static_cast<size_t> (index)] = processorParameters[index] != nullptr
+            ? processorParameters[index]->getValue() : 0.0f;
+}
+
+void SmartDuckingAudioProcessor::restoreComparisonSlot (int slot)
+{
+    if (slot < 0 || slot >= static_cast<int> (comparisonSlots.size()))
+        return;
+
+    const auto& snapshot = comparisonSlots[static_cast<size_t> (slot)];
+    const auto& processorParameters = getParameters();
+    const auto count = juce::jmin (static_cast<int> (snapshot.size()),
+                                   processorParameters.size());
+
+    for (int index = 0; index < count; ++index)
+        if (processorParameters[index] != nullptr)
+            processorParameters[index]->setValueNotifyingHost (
+                snapshot[static_cast<size_t> (index)]);
+}
+
+void SmartDuckingAudioProcessor::switchComparisonSlot (int slot)
+{
+    slot = juce::jlimit (0, static_cast<int> (comparisonSlots.size()) - 1, slot);
+    const auto previous = currentComparisonSlot.load (std::memory_order_relaxed);
+
+    if (slot == previous)
+        return;
+
+    captureComparisonSlot (previous);
+    restoreComparisonSlot (slot);
+    currentComparisonSlot.store (slot, std::memory_order_relaxed);
 }
 
 void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumExpectedSamplesPerBlock)
@@ -939,7 +1030,28 @@ juce::AudioProcessorEditor* SmartDuckingAudioProcessor::createEditor()
 
 void SmartDuckingAudioProcessor::getStateInformation (juce::MemoryBlock& destinationData)
 {
-    if (const auto stateXml = parameters.copyState().createXml())
+    const auto activeSlot = currentComparisonSlot.load (std::memory_order_relaxed);
+    captureComparisonSlot (activeSlot);
+    auto stateToSave = parameters.copyState();
+    stateToSave.setProperty ("comparisonSlot", activeSlot, nullptr);
+    stateToSave.setProperty ("factoryProgram",
+                             currentFactoryProgram.load (std::memory_order_relaxed),
+                             nullptr);
+
+    const auto& processorParameters = getParameters();
+    for (size_t slot = 0; slot < comparisonSlots.size(); ++slot)
+    {
+        juce::ValueTree snapshot (slot == 0 ? "ComparisonA" : "ComparisonB");
+        for (int index = 0; index < processorParameters.size(); ++index)
+            if (const auto* parameter = dynamic_cast<juce::AudioProcessorParameterWithID*> (
+                    processorParameters[index]))
+                snapshot.setProperty (parameter->paramID,
+                                      comparisonSlots[slot][static_cast<size_t> (index)],
+                                      nullptr);
+        stateToSave.addChild (snapshot, -1, nullptr);
+    }
+
+    if (const auto stateXml = stateToSave.createXml())
         copyXmlToBinary (*stateXml, destinationData);
 }
 
@@ -950,8 +1062,40 @@ void SmartDuckingAudioProcessor::setStateInformation (const void* data, int size
     if (stateXml != nullptr && stateXml->hasTagName (parameters.state.getType()))
     {
         auto restoredState = juce::ValueTree::fromXml (*stateXml);
+        const auto savedComparisonSlot = juce::jlimit (
+            0, 1, static_cast<int> (restoredState.getProperty ("comparisonSlot", 0)));
+        const auto savedFactoryProgram = juce::jlimit (
+            0,
+            getNumPrograms() - 1,
+            static_cast<int> (restoredState.getProperty ("factoryProgram", 0)));
+        std::array<juce::ValueTree, 2> savedSnapshots {
+            restoredState.getChildWithName ("ComparisonA"),
+            restoredState.getChildWithName ("ComparisonB")
+        };
+        for (const auto& snapshot : savedSnapshots)
+            if (snapshot.isValid())
+                restoredState.removeChild (snapshot, nullptr);
         removeLegacyState (restoredState);
         parameters.replaceState (restoredState);
+        initialiseComparisonSlots();
+
+        const auto& processorParameters = getParameters();
+        for (size_t slot = 0; slot < savedSnapshots.size(); ++slot)
+        {
+            if (! savedSnapshots[slot].isValid())
+                continue;
+
+            for (int index = 0; index < processorParameters.size(); ++index)
+                if (const auto* parameter = dynamic_cast<juce::AudioProcessorParameterWithID*> (
+                        processorParameters[index]))
+                    comparisonSlots[slot][static_cast<size_t> (index)] = static_cast<float> (
+                        savedSnapshots[slot].getProperty (
+                            parameter->paramID,
+                            comparisonSlots[slot][static_cast<size_t> (index)]));
+        }
+
+        currentComparisonSlot.store (savedComparisonSlot, std::memory_order_relaxed);
+        currentFactoryProgram.store (savedFactoryProgram, std::memory_order_relaxed);
     }
 }
 

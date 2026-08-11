@@ -13,7 +13,7 @@
 5. [`../README.md`](../README.md) — сборка, identity и краткий статус;
 6. [`technical-spec-v0.1-ru.md`](technical-spec-v0.1-ru.md) — первоначальная подробная спецификация.
 
-Важно: старая техническая спецификация частично устарела. Для фактического текущего поведения источником истины является код и тесты. До стабильного 1.0 приоритет имеет `implementation-plan-ru.md`; post-1.0 spectral-направление описано отдельно и не должно преждевременно менять текущий release scope.
+Важно: старая техническая спецификация частично устарела. Для фактического поведения 1.0 источником истины являются код, тесты, `ARCHITECTURE.md` и release validation record. Post-1.0 spectral-направление описано отдельно и не должно преждевременно менять стабильный signal path.
 
 Перед любой работой:
 
@@ -44,7 +44,7 @@ Smart Ducking — VST3 для сведения закадровой озвучк
 
 ## 3. Текущий релизный снимок
 
-- Версия CMake-проекта: `0.2.0`.
+- Версия CMake-проекта: `1.0.0`.
 - Основная ветка: `main`.
 - Репозиторий: `RusAD32/SmartDucking`.
 - Язык: C++20.
@@ -54,7 +54,7 @@ Smart Ducking — VST3 для сведения закадровой озвучк
 - Основная DAW: REAPER на Windows.
 - В одном `Smart Ducking.vst3` зарегистрированы два audio-module class.
 
-Последняя проверенная кодовая база перед созданием документов собиралась в Debug и Release; `SmartDucking.Processor` и `SmartDucking.VST3Factory` проходили в обеих конфигурациях. После получения репозитория всё равно необходимо повторить baseline build и tests на своей машине.
+Release 1.0.0 проверен локально в Debug и Universal Release: `SmartDucking.Processor` и `SmartDucking.VST3Factory` проходят, а официальный pluginval 1.0.4 проходит strictness 5 для обоих классов. Фактическая среда, benchmark и границы ручной проверки записаны в [`validation-1.0-ru.md`](validation-1.0-ru.md). После получения репозитория всё равно необходимо повторить baseline build и tests на своей машине.
 
 ## 4. Plugin classes и шины
 
@@ -286,7 +286,10 @@ Default matrix:
 | Файл | Ответственность |
 |---|---|
 | `Source/PluginProcessor.cpp/.h` | Шины, APVTS, channel mapping, crossover routing, LFE/downmix, PDC, meters, state |
-| `Source/SpectralSuppressor.h` | STFT/WOLA, PCE, Voice analysis, spectral mask, wideband gain, sleep и spectrum capture |
+| `Source/SpectralSuppressor.h` | Оркестрация STFT/WOLA, Voice analysis, spectral mask, wideband gain, sleep и spectrum capture |
+| `Source/PceHistory.h` | Предвыделенное persistent state для time-smoothed PCE coherence |
+| `Source/SpectralFrameSmoothers.h` | Переиспользуемое сглаживание mask shapes и пяти конечных matrix controls |
+| `Source/FactoryPresets.h` | Имена и parameter overrides четырёх заводских starting points |
 | `Source/LinkwitzRiley8Crossover.h` | Сглаживаемый LR8 из четырёх biquad stages на канал |
 | `Source/LcrDuckMatrix.h` | 5×5 defaults и maximum aggregation |
 | `Source/SidechainClassifier.h` | Silence/one-sided/dual-mono/stereo fast-path selection |
@@ -297,9 +300,10 @@ Default matrix:
 | `Source/DiagnosticLogger.cpp/.h` | Lock-free counters и отдельный low-priority file writer в diagnostic builds |
 | `Tests/ProcessorTests.cpp` | DSP, routing, state, latency, editor и optimization tests |
 | `Tests/VST3FactoryTests.cpp` | Динамическая загрузка bundle и проверка VST3 classes/layouts |
+| `Tests/PerformanceBenchmark.cpp` | Воспроизводимая CPU-матрица вариантов, режимов, FFT и visualisation |
 | `Resources/moduleinfo.json.in` | Manifest трёх VST3 classes: два components и controller |
 
-`SpectralSuppressor.h` слишком велик и должен быть позднее разделён, но только после добавления characterization tests. Не начинайте знакомство с проектом с широкого механического рефакторинга этого файла.
+В Stage D из `SpectralSuppressor.h` под защитой characterization tests вынесены PCE history и frame/control smoothers. Дальнейшую декомпозицию следует выполнять такими же небольшими переносами без изменения звука; широкий механический рефакторинг orchestration-класса не нужен.
 
 ## 9. Параметры и совместимость состояния
 
@@ -341,6 +345,8 @@ Lookahead находится в Advanced/Dynamics. Единая группа `B 
 - Output meter показывает только L/R при forced downmix;
 - Simple/Advanced, выбранная Advanced page и link сохраняются как UI-state;
 - Voice Format, VLC order, Downmix и Drop LFE используют короткие переходы.
+- кнопки `A / B` в header автоматически сохраняют покидаемый snapshot и восстанавливают выбранный; оба snapshot входят в project state;
+- host program list содержит `Default`, `Gentle Dialogue`, `Voice Focus` и `Fast Announcer`.
 
 ## 11. Сборка на новой машине
 
@@ -444,7 +450,7 @@ cmake --build --preset macos-release-universal --target SmartDucking_All SmartDu
 ctest --preset macos-release-universal
 ```
 
-macOS infrastructure существует, но полноценная продуктовая проверка и packaging ещё считаются future work.
+Universal macOS bundle, ad-hoc code signing, unit/factory tests и pluginval strictness 5 проверены для 1.0. Нотаризация и дистрибуционный installer по-прежнему не входят в этот репозиторий.
 
 ## 12. Тестовый цикл после изменений
 
@@ -461,7 +467,7 @@ macOS infrastructure существует, но полноценная прод�
 Перед release дополнительно:
 
 - pluginval strictness 5 для готового bundle;
-- strictness 10 как расширенная проверка;
+- strictness 10 как необязательная расширенная/nightly проверка;
 - playback, seek, loop и offline render;
 - все четыре комбинации Main/Voice Stereo/Surround;
 - standard/VLC order;
@@ -469,7 +475,15 @@ macOS infrastructure существует, но полноценная прод�
 - QUALITY/NORMAL и ×1/×2/×4;
 - GUI open/closed CPU comparison.
 
-pluginval будет подключён как отдельный dev/CI executable. Он не должен входить в VST3, запускаться в REAPER или создавать runtime-нагрузку.
+pluginval подключается только при configure с необязательным путём и не входит в VST3:
+
+```sh
+cmake --preset macos-release-universal \
+  -DSMART_DUCKING_PLUGINVAL_EXECUTABLE=/path/to/pluginval
+cmake --build --preset macos-release-universal --target SmartDuckingPluginval
+```
+
+Target запускает strictness 5 для готового bundle. Обычная сборка от pluginval не зависит; macOS/Windows GitHub Actions загружают фиксированную версию 1.0.4 и сохраняют validation output как artifact.
 
 ## 13. Realtime safety
 
@@ -492,24 +506,20 @@ pluginval будет подключён как отдельный dev/CI executa
 
 Все delay lines, FFT buffers, windows и histories выделяются в prepare/configuration stage. SLEEP не освобождает память и не меняет geometry.
 
-## 14. Известные проблемы на момент handoff
+## 14. Известные ограничения на момент handoff
 
-Stages A–C реализованы: безопасная конфигурация и Lookahead дополнены Bypass/Solo/Delta для трёх стадий, взаимоисключающим Monitor Mode, low-only Crossover Delta без LFE, фактической SLEEP/ACTIVE-индикацией, интерактивной weighting-нодой и законченным matrix/routing UI.
+Stages A–D завершены, блокирующих известных дефектов релиза 1.0 нет. Dead history/components удалены, PCE history и frame smoothers вынесены из spectral orchestration, добавлены A/B, factory presets, benchmark, внешний pluginval target и macOS/Windows CI.
 
-Оставшиеся известные проблемы:
+Ограничения текущего evidence:
 
-1. `SpectralSuppressor.h` объединяет слишком много ответственностей.
-2. В editor остаются подтверждённые dead history/components.
-3. Внешний pluginval/CI и расширенная release-проверка ещё не подключены.
-4. A/B и factory presets ещё не добавлены.
-
-Полное решение и порядок находятся в `implementation-plan-ru.md`.
+1. Windows job описан в GitHub Actions, но локальная проверка этого snapshot выполнена на macOS; результат Windows следует брать из конкретного CI run.
+2. Ручной REAPER smoke-test подтверждён пользователем до финального Stage D hardening; полная listening matrix остаётся отдельной продуктовой приёмкой, а не unit-тестом.
+3. Нотаризация, installer и pluginval strictness 10 не являются обязательным baseline 1.0.
+4. Дальнейшие DSP-эксперименты из post-1.0 плана не должны менять 1.0 state/identity без migration.
 
 ## 15. Рекомендуемая точка продолжения
 
-Stages A–C завершены. Следующая итерация — Stage D из implementation plan:
-расширение тестов и pluginval/CI, декомпозиция spectral engine, удаление dead
-code, синхронизация документации и добавление A/B с factory presets.
+Стабильный scope 1.0 закрыт. Следующая работа начинается с отдельного post-1.0 прототипа из [`post-1.0-enhancement-plan-ru.md`](post-1.0-enhancement-plan-ru.md), не меняет существующий режим по умолчанию и сначала подтверждается characterization tests, измерениями и прослушиванием. Release maintenance следует вести отдельными небольшими fixes с повтором unit/factory/pluginval baseline.
 
 ## 16. Как диагностировать проблему
 
@@ -536,6 +546,7 @@ code, синхронизация документации и добавлени�
 - текущий FFT Resolution и Processing Mode.
 
 К STFT latency всегда добавляется реализованный фиксированный 50 ms Lookahead reserve.
+Дополнительно processor сообщает host конечный tail 2.0 s; factory test проверяет 96 000 samples при 48 kHz.
 
 ### CPU не падает при тишине sidechain
 

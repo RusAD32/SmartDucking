@@ -1,12 +1,12 @@
 # Smart Ducking
 
-Smart Ducking is an OnWave VST3 prototype for voice-aware spatial and spectral ducking in voice-over mixing.
+Smart Ducking is an OnWave VST3 for voice-aware spatial and spectral ducking in voice-over mixing.
 
-The current `0.2.0` prototype exposes two audio-module classes from one `Smart Ducking.vst3` bundle. `Smart Ducking (Stereo)` has fixed `2 + 6 + 2` buses; `Smart Ducking (Surround)` has fixed `6 + 6 + 6` buses. Both classes use the same processor, DSP, state, and editor sources. Main format follows the selected class, while Voice can be interpreted as Stereo or 5.1 in either class. Stereo sources are decomposed into energy-normalised L/C/R above the Linkwitz–Riley 8th-order crossover; 5.1 sources use direct L/C/R/Ls/Rs components. The Voice components independently control corresponding Variant-A spectral masks, while the adjustable 5×5 matrix calculates spatial wideband gains. LFE is excluded from detection and processing and remains latency-aligned.
+The `1.0.0` release exposes two audio-module classes from one `Smart Ducking.vst3` bundle. `Smart Ducking (Stereo)` has fixed `2 + 6 + 2` buses; `Smart Ducking (Surround)` has fixed `6 + 6 + 6` buses. Both classes use the same processor, DSP, state, and editor sources. Main format follows the selected class, while Voice can be interpreted as Stereo or 5.1 in either class. Stereo sources are decomposed into energy-normalised L/C/R above the Linkwitz–Riley 8th-order crossover; 5.1 sources use direct L/C/R/Ls/Rs components. The Voice components independently control corresponding Variant-A spectral masks, while the adjustable 5×5 matrix calculates spatial wideband gains. LFE is excluded from detection and processing and remains latency-aligned.
 
-The custom editor keeps Main/Voice and wideband/spectral Gain Reduction meters visible while switching between a focused Simple view and Advanced Dynamics, Spectrum, and Routing pages. A shared `B / S / Δ` strip controls Crossover, Wideband, and Spectral stages; the host sees three independent bypass parameters and one mutually exclusive Monitor Mode choice. Crossover Delta monitors the protected low band without LFE, while Wideband and Spectral Delta return only their removed signal. The header reports the actual heavy-engine `SLEEP / ACTIVE` state. Meter rows follow the active routing: stereo inputs show L/R, Stereo-class reduction shows its internal L/C/R components, Surround routing shows L/C/R/Ls/Rs, and forced downmix changes Output to L/R. Voice format is the only format selector. The Surround class additionally exposes forced stereo downmix and optional LFE removal in its header, while VLC Main channel order is available from the Main meter menu; these controls are hidden in the Stereo class. The matrix presents Voice rows and Original columns as shared table headers and dynamically displays only the active 3×3, 3×5, 5×3, or 5×5 set of linear percentage sliders. Its `L/R LINK` editing tool mirrors manual changes spatially without rewriting host automation. Lookahead is available in Advanced Dynamics. Weight Frequency/Gain/Q are edited as one analyser node using drag, Shift-drag or wheel, and double-click reset. Editor mode, Advanced page, and link state survive editor recreation and project-state round trips.
+The custom editor keeps Main/Voice and wideband/spectral Gain Reduction meters visible while switching between a focused Simple view and Advanced Dynamics, Spectrum, and Routing pages. A shared `B / S / Δ` strip controls Crossover, Wideband, and Spectral stages; the host sees three independent bypass parameters and one mutually exclusive Monitor Mode choice. Crossover Delta monitors the protected low band without LFE, while Wideband and Spectral Delta return only their removed signal. The header reports the actual heavy-engine `SLEEP / ACTIVE` state and provides persistent `A / B` comparison slots. Meter rows follow the active routing: stereo inputs show L/R, Stereo-class reduction shows its internal L/C/R components, Surround routing shows L/C/R/Ls/Rs, and forced downmix changes Output to L/R. Voice format is the only format selector. The Surround class additionally exposes forced stereo downmix and optional LFE removal in its header, while VLC Main channel order is available from the Main meter menu; these controls are hidden in the Stereo class. The matrix presents Voice rows and Original columns as shared table headers and dynamically displays only the active 3×3, 3×5, 5×3, or 5×5 set of linear percentage sliders. Its `L/R LINK` editing tool mirrors manual changes spatially without rewriting host automation. Lookahead is available in Advanced Dynamics. Weight Frequency/Gain/Q are edited as one analyser node using drag, Shift-drag or wheel, and double-click reset. Editor mode, Advanced page, link state, and both A/B parameter snapshots survive editor recreation and project-state round trips. The host program list contains `Default`, `Gentle Dialogue`, `Voice Focus`, and `Fast Announcer` starting points.
 
-Lookahead is adjustable from 0 to 50 ms with a 10 ms default. Main reserves the full 50 ms while Voice is delayed by `50 ms - Lookahead`, so the reported latency remains `STFT latency + 50 ms` for every Lookahead value. `NORMAL` is the default Processing Mode for new instances. FFT Resolution and Processing Mode changes are queued during playback and applied only through a safe stopped/prepare configuration path instead of resetting DSP state in the audio callback.
+Lookahead is adjustable from 0 to 50 ms with a 10 ms default. Main reserves the full 50 ms while Voice is delayed by `50 ms - Lookahead`, so the reported latency remains `STFT latency + 50 ms` for every Lookahead value. A finite two-second tail is reported to the host so delayed STFT/crossover/overlap-add output is not truncated after input silence. `NORMAL` is the default Processing Mode for new instances. FFT Resolution and Processing Mode changes are queued during playback and applied only through a safe stopped/prepare configuration path instead of resetting DSP state in the audio callback.
 
 ## Requirements
 
@@ -45,7 +45,24 @@ cmake --build --preset macos-release-universal --target SmartDucking_All SmartDu
 ctest --preset macos-release-universal
 ```
 
-The factory test dynamically loads the finished VST3 and verifies both audio-module classes and their bus layouts. `SmartDucking.Processor` covers the current DSP contract, editor-gated meter capture, and the Simple/Advanced editor with its Dynamics, Spectrum, and Routing pages.
+The factory test dynamically loads the finished VST3 and verifies both audio-module classes, their bus layouts, metadata, processing, state, latency, and distinct class IDs. `SmartDucking.Processor` covers the DSP contract, safe configuration, variable-block and realtime/offline-style equivalence, editor behaviour, presets, and A/B state.
+
+To enable the optional external pluginval target, provide a pluginval executable while configuring:
+
+```sh
+cmake --preset macos-release-universal \
+  -DSMART_DUCKING_PLUGINVAL_EXECUTABLE=/path/to/pluginval
+cmake --build --preset macos-release-universal --target SmartDuckingPluginval
+```
+
+This runs the finished bundle at strictness 5. Normal configure, build, and test commands do not require pluginval. GitHub Actions performs the same validation on macOS and Windows. A release CPU matrix can be run with:
+
+```sh
+cmake --build --preset macos-release-universal --target SmartDuckingBenchmark
+./build-macos/release-universal/SmartDuckingBenchmark_artefacts/Release/SmartDuckingBenchmark
+```
+
+The local 1.0 acceptance record, pluginval result, and benchmark summary are in [`docs/validation-1.0-ru.md`](docs/validation-1.0-ru.md).
 
 The VST3 bundle is produced under:
 
@@ -130,6 +147,11 @@ Rout = R + 0.707 C + 0.707 Rs + 0.5 LFE
 - [x] Manual-only L/R symmetry link for matrix editing
 - [x] Routing-aware Output meters and persistent editor mode/page/link state
 - [x] Smoothed Voice format, VLC order, downmix, and Drop LFE routing changes
+- [x] Four factory starting-point presets and persistent A/B comparison
+- [x] Extracted PCE history and spectral-frame smoothing components with characterization tests
+- [x] Extended processor/factory coverage, variable-block equivalence, and CPU benchmark target
+- [x] Optional pluginval strictness-5 target and macOS/Windows CI
+- [x] Finite two-second VST3 tail reporting verified through the factory API
 
 Third-party attribution and the Apache-2.0 license for the adapted PCE factor are recorded in `THIRD_PARTY_LICENSES.md`; the build copies this file into the VST3 bundle and next to the Standalone executable.
 

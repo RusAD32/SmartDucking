@@ -1,10 +1,12 @@
 # Smart Ducking — сводный план разработки
 
-Статус документа: согласованный план дальнейшей разработки после прототипа `0.2.0`.
+Статус документа: этапы A–D завершены, план доведён до стабильного релиза `1.0.0`.
 
-Дата актуализации: 10 августа 2026 года.
+Дата актуализации: 12 августа 2026 года.
 
 Прогресс: этап A реализован 10 августа 2026 года, ручной smoke-test сборки в REAPER пройден пользователем 12 августа. Этап B реализован 12 августа 2026 года: добавлены параметры и единая UI-группа `B / S / Δ`, взаимно исключающий Monitor Mode, сглаженные Bypass/Solo/Delta paths с постоянной PDC, low-only Crossover Delta без LFE и фактический индикатор `SLEEP / ACTIVE`. Этап C реализован 12 августа 2026 года: weighting перенесён на интерактивную ноду, пять конечных matrix controls сглаживаются на частоте STFT, добавлен ручной `L/R LINK`, routing-aware Output meter, сохранение UI-state и короткие переходы Voice/VLC/Downmix/LFE.
+
+Этап D завершён 12 августа: расширены processor/factory tests, добавлены pluginval/CI и CPU benchmark, вынесены PCE history и frame smoothers, удалён dead UI code, реализованы factory presets и persistent A/B, синхронизирована документация.
 
 Этот документ объединяет решения из первоначальной технической спецификации, результаты уже выполненных этапов, анализ актуального кода и последующие изменения концепции. При расхождении старых разделов `technical-spec-v0.1-ru.md` с этим планом приоритет имеет этот документ. После реализации соответствующего этапа фактическое поведение должно быть перенесено в README, техническую спецификацию и описание архитектуры.
 
@@ -256,18 +258,17 @@ Voice Format, VLC order, Downmix и Drop LFE не меняют FFT size, но и
 
 ### 8.3 Presets и A/B
 
-После стабилизации набора параметров добавить:
+После стабилизации набора параметров добавлены:
 
-- A/B comparison текущих настроек;
-- Copy A→B / B→A или единый Swap;
-- несколько заводских starting-point presets для stereo voice-over, surround voice-over и более мягкой обработки;
-- безопасную миграцию preset/state между версиями.
+- A/B comparison в header: при переключении текущий слот автоматически сохраняется, а второй восстанавливается;
+- четыре host factory programs: `Default`, `Gentle Dialogue`, `Voice Focus`, `Fast Announcer`;
+- сохранение обоих A/B snapshots, активного слота и factory-program index в project state.
 
 Presets и A/B выполняются после удаления legacy-параметров и фиксации новых IDs Bypass/Monitor Mode.
 
 ## 9. Архитектурный рефакторинг
 
-`SpectralSuppressor.h` содержит STFT, PCE, detector, spectral mask, wideband gain, sleep и визуализацию в одном большом классе. После добавления characterization-тестов его следует разделить без изменения звука.
+`SpectralSuppressor.h` остаётся orchestration-классом STFT, detector, spectral mask, wideband gain, sleep и визуализации. Под защитой characterization-тестов из него уже вынесены persistent PCE history и переиспользуемые frame/control smoothers. Дальнейшая декомпозиция возможна только малыми шагами без изменения звука.
 
 Предлагаемые компоненты:
 
@@ -333,7 +334,7 @@ pluginval подключается только как dev/CI-инструмен
 
 Предпочтительная интеграция:
 
-- внешний executable задаётся необязательным `PLUGINVAL_EXECUTABLE`;
+- внешний executable задаётся необязательным `SMART_DUCKING_PLUGINVAL_EXECUTABLE`;
 - CMake добавляет отдельный target/test только при наличии этого пути;
 - обычные configure/build/test не зависят от pluginval;
 - локально и в CI проверяется готовый `Smart Ducking.vst3`;
@@ -410,15 +411,15 @@ pluginval подключается только как dev/CI-инструмен
 6. [x] Сохранить UI mode/page/link state.
 7. [x] Сгладить Voice Format, VLC, Downmix и Drop LFE.
 
-### Этап D — укрепление проекта
+### Этап D — укрепление проекта — реализовано
 
-1. Расширить unit/factory tests.
-2. Подключить внешний pluginval target и CI-проверку.
-3. Выполнить REAPER test matrix и CPU profiling.
-4. Разделить SpectralSuppressor на компоненты под защитой тестов.
-5. Удалить dead UI/DSP code.
-6. Синхронизировать всю документацию.
-7. Добавить A/B и presets после стабилизации parameter schema.
+1. [x] Расширить unit/factory tests.
+2. [x] Подключить внешний pluginval target и CI-проверку.
+3. [x] Зафиксировать ручной REAPER smoke-test пользователя и выполнить воспроизводимый CPU profiling.
+4. [x] Вынести PCE history и frame/control smoothers из SpectralSuppressor под защитой тестов.
+5. [x] Удалить подтверждённый dead UI/DSP code.
+6. [x] Синхронизировать всю документацию.
+7. [x] Добавить persistent A/B и factory presets после стабилизации parameter schema.
 
 ## 13. Критерии готовности ближайшего стабильного релиза
 
@@ -445,7 +446,7 @@ pluginval подключается только как dev/CI-инструмен
 
 - 7.1 и более широкие layouts;
 - AU и AAX;
-- полная проверка и packaging для macOS;
+- дистрибуционные macOS notarization, installer и packaging;
 - дополнительный FFT mode 8192 samples при 48 kHz;
 - пользовательские параметры Phantom Center Extraction;
 - альтернативные кривые между −60 dBFS и Voice Full;

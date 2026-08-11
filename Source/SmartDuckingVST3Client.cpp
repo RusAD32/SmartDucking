@@ -199,6 +199,8 @@ private:
 };
 } // namespace juce
 
+extern "C" SMTG_EXPORT_SYMBOL Steinberg::IPluginFactory* PLUGIN_API GetPluginFactory();
+
 extern "C" SMTG_EXPORT_SYMBOL Steinberg::IPluginFactory* PLUGIN_API GetPluginFactory()
 {
     return new juce::SmartDuckingPluginFactory();

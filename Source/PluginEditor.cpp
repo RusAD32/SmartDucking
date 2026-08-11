@@ -605,7 +605,6 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
                                                                 juce::SettableTooltipClient
 {
     static constexpr int displayBins = smart_ducking::StereoSpectralLcrProcessor::displayBinCount;
-    static constexpr int historyLength = 180;
 
     SpectrumPanel (SmartDuckingAudioProcessor& newProcessor)
         : processor (newProcessor), state (newProcessor.getParameterState())
@@ -614,8 +613,6 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
         outputDb.fill (-90.0f);
         reductionDb.fill (0.0f);
         spectralMaskDb.fill (0.0f);
-        wideHistory.fill (0.0f);
-        spectralHistory.fill (0.0f);
         initialiseCrossoverTemplate();
         addChildComponent (markerEditor);
         markerEditor.setColour (juce::TextEditor::backgroundColourId, backgroundSoftColour);
@@ -770,14 +767,6 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
         processor.recordSpectrumUpdateDuration (static_cast<std::uint64_t> (
             juce::Time::getHighResolutionTicks() - diagnosticUpdateStart));
 #endif
-    }
-
-    void pushReduction (float wideDb, float spectralDb)
-    {
-        wideHistory[static_cast<size_t> (historyWritePosition)] = wideDb;
-        spectralHistory[static_cast<size_t> (historyWritePosition)] = spectralDb;
-        historyWritePosition = (historyWritePosition + 1) % historyLength;
-        repaint();
     }
 
     void paint (juce::Graphics& graphics) override
@@ -1409,64 +1398,6 @@ private:
                            juce::Justification::centredLeft);
     }
 
-    void drawHistory (juce::Graphics& graphics, juce::Rectangle<float> bounds)
-    {
-        graphics.setColour (juce::Colours::black.withAlpha (0.18f));
-        graphics.fillRoundedRectangle (bounds, 7.0f);
-        auto graph = bounds.reduced (74.0f, 7.0f);
-        graph.removeFromRight (8.0f);
-
-        graphics.setFont (juce::FontOptions { 9.5f, juce::Font::bold });
-        graphics.setColour (wideReductionColour);
-        graphics.drawText ("WIDE", bounds.removeFromLeft (66.0f).removeFromTop (22.0f),
-                           juce::Justification::centredLeft);
-        graphics.setColour (spectralReductionColour);
-        graphics.drawText ("SPECTRAL", bounds.removeFromLeft (66.0f),
-                           juce::Justification::centredLeft);
-
-        graphics.setColour (juce::Colours::white.withAlpha (0.055f));
-        graphics.drawHorizontalLine (juce::roundToInt (graph.getY()), graph.getX(), graph.getRight());
-        graphics.drawHorizontalLine (juce::roundToInt (graph.getCentreY()), graph.getX(), graph.getRight());
-
-        juce::Path widePath;
-        juce::Path spectralPath;
-
-        for (int point = 0; point < historyLength; ++point)
-        {
-            const auto index = (historyWritePosition + point) % historyLength;
-            const auto x = graph.getX() + graph.getWidth()
-                                         * static_cast<float> (point)
-                                         / static_cast<float> (historyLength - 1);
-            const auto wideY = graph.getY() + graph.getHeight()
-                                            * juce::jlimit (0.0f,
-                                                            1.0f,
-                                                            wideHistory[static_cast<size_t> (index)]
-                                                                / maximumDisplayedReductionDb);
-            const auto spectralY = graph.getY() + graph.getHeight()
-                                                * juce::jlimit (
-                                                    0.0f,
-                                                    1.0f,
-                                                    spectralHistory[static_cast<size_t> (index)]
-                                                        / maximumDisplayedReductionDb);
-
-            if (point == 0)
-            {
-                widePath.startNewSubPath (x, wideY);
-                spectralPath.startNewSubPath (x, spectralY);
-            }
-            else
-            {
-                widePath.lineTo (x, wideY);
-                spectralPath.lineTo (x, spectralY);
-            }
-        }
-
-        graphics.setColour (wideReductionColour);
-        graphics.strokePath (widePath, juce::PathStrokeType (1.5f));
-        graphics.setColour (spectralReductionColour);
-        graphics.strokePath (spectralPath, juce::PathStrokeType (1.5f));
-    }
-
     [[nodiscard]] juce::Rectangle<float> weightNodeArea() const noexcept
     {
         return spectrumBounds.reduced (24.0f, 34.0f);
@@ -1775,8 +1706,6 @@ private:
     std::array<float, displayBins> outputDb {};
     std::array<float, displayBins> reductionDb {};
     std::array<float, displayBins> spectralMaskDb {};
-    std::array<float, historyLength> wideHistory {};
-    std::array<float, historyLength> spectralHistory {};
     std::array<float, crossoverTemplatePoints> crossoverLowTemplateDb {};
     std::array<float, crossoverTemplatePoints> crossoverHighTemplateDb {};
     std::array<juce::Point<float>, crossoverTemplatePoints> crossoverLowPoints {};
@@ -1785,7 +1714,6 @@ private:
     juce::Path crossoverHighPath;
     std::array<juce::Rectangle<float>, 3> markerLabelBounds {};
     juce::Rectangle<float> spectrumBounds;
-    juce::Rectangle<float> historyBounds;
     juce::TextEditor markerEditor;
     juce::RangedAudioParameter* draggedParameter = nullptr;
     juce::RangedAudioParameter* editingParameter = nullptr;
@@ -1795,7 +1723,6 @@ private:
     float cachedCrossoverFrequency = -1.0f;
     float cachedCrossoverNyquist = -1.0f;
     juce::Rectangle<float> cachedCrossoverBounds;
-    int historyWritePosition = 0;
     float weightDragStartY = 0.0f;
     float weightDragStartQ = 0.8f;
     bool hasSpectrumFrame = false;
@@ -1805,11 +1732,11 @@ private:
 };
 
 SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
-    SmartDuckingAudioProcessor& audioProcessor)
-    : juce::AudioProcessorEditor (audioProcessor),
-      processor (audioProcessor),
+    SmartDuckingAudioProcessor& newProcessor)
+    : juce::AudioProcessorEditor (newProcessor),
+      audioProcessor (newProcessor),
       onWaveLookAndFeel (std::make_unique<OnWaveLookAndFeel>()),
-      spectrumPanel (std::make_unique<SpectrumPanel> (audioProcessor))
+      spectrumPanel (std::make_unique<SpectrumPanel> (newProcessor))
 {
     using namespace smart_ducking::parameter_ids;
 
@@ -1831,6 +1758,23 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     advancedModeButton.onClick = [this] { setEditorMode (EditorMode::advanced); };
     simpleModeButton.setTooltip ("Show the essential controls only.");
     advancedModeButton.setTooltip ("Show dynamics, spectral shaping and routing controls.");
+
+    for (size_t slot = 0; slot < comparisonButtons.size(); ++slot)
+    {
+        auto& button = comparisonButtons[slot];
+        addAndMakeVisible (button);
+        button.setClickingTogglesState (false);
+        button.setTooltip (
+            "Switch comparison slot: the active settings are stored before the selected slot is recalled.");
+        button.onClick = [this, slot]
+        {
+            audioProcessor.switchComparisonSlot (static_cast<int> (slot));
+            for (size_t index = 0; index < comparisonButtons.size(); ++index)
+                comparisonButtons[index].setToggleState (index == slot,
+                                                          juce::dontSendNotification);
+        };
+    }
+    comparisonButtons[0].setToggleState (true, juce::dontSendNotification);
 
     const std::array<const char*, 3> stageNames { "CROSSOVER", "WIDEBAND", "SPECTRAL" };
     const std::array<const char*, 3> bypassParameterIds {
@@ -1873,7 +1817,7 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
         auto& bypass = stageButtons[stage * 3];
         bypass.setClickingTogglesState (true);
         stageBypassAttachments[stage] = std::make_unique<ButtonAttachment> (
-            processor.getParameterState(), bypassParameterIds[stage], bypass);
+            audioProcessor.getParameterState(), bypassParameterIds[stage], bypass);
         stageButtons[stage * 3 + 1].onClick = [this, mode = soloModes[stage]]
         {
             setMonitorMode (mode);
@@ -1944,7 +1888,7 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
         "response at higher CPU cost.");
     processingModeLabel.setTooltip (processingModeChoice.getTooltip());
     processingModeAttachment = std::make_unique<ComboBoxAttachment> (
-        processor.getParameterState(), processingMode, processingModeChoice);
+        audioProcessor.getParameterState(), processingMode, processingModeChoice);
 
     fftLabel.setText ("FFT RESOLUTION", juce::dontSendNotification);
     fftLabel.setJustificationType (juce::Justification::centred);
@@ -1956,7 +1900,7 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     fftChoice.setJustificationType (juce::Justification::centred);
     fftChoice.setTooltip ("FFT resolution: higher settings improve frequency detail but increase latency and CPU use.");
     fftLabel.setTooltip (fftChoice.getTooltip());
-    fftAttachment = std::make_unique<ComboBoxAttachment> (processor.getParameterState(),
+    fftAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.getParameterState(),
                                                           fftResolution,
                                                           fftChoice);
 
@@ -2034,36 +1978,36 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     voiceFormatChoice.setTooltip ("Select whether the sidechain voice signal is stereo or surround.");
     voiceFormatLabel.setTooltip (voiceFormatChoice.getTooltip());
     voiceFormatAttachment = std::make_unique<ComboBoxAttachment> (
-        processor.getParameterState(), voiceFormat, voiceFormatChoice);
+        audioProcessor.getParameterState(), voiceFormat, voiceFormatChoice);
 
     for (auto* toggle : { &downmixToggle, &dropLfeToggle })
     {
         addAndMakeVisible (*toggle);
-        toggle->setVisible (processor.isSurroundVariant());
+        toggle->setVisible (audioProcessor.isSurroundVariant());
     }
 
     downmixToggle.setTooltip ("Downmix the processed main 5.1 signal to stereo at the output.");
     dropLfeToggle.setTooltip ("Exclude the LFE channel when creating the stereo downmix.");
     downmixAttachment = std::make_unique<ButtonAttachment> (
-        processor.getParameterState(), downmix, downmixToggle);
+        audioProcessor.getParameterState(), downmix, downmixToggle);
     dropLfeAttachment = std::make_unique<ButtonAttachment> (
-        processor.getParameterState(), dropLfe, dropLfeToggle);
+        audioProcessor.getParameterState(), dropLfe, dropLfeToggle);
 
-    if (const auto* downmixValue = processor.getParameterState().getRawParameterValue (downmix))
+    if (const auto* downmixValue = audioProcessor.getParameterState().getRawParameterValue (downmix))
         dropLfeToggle.setEnabled (downmixValue->load() >= 0.5f);
 
     restoreUiState();
     setAdvancedPage (advancedPage);
     setEditorMode (editorMode);
-    processor.setVisualisationFrameRate (meterRefreshHz);
-    processor.notifyEditorOpened();
+    audioProcessor.setVisualisationFrameRate (meterRefreshHz);
+    audioProcessor.notifyEditorOpened();
     startTimerHz (static_cast<int> (meterRefreshHz));
 }
 
 SmartDuckingAudioProcessorEditor::~SmartDuckingAudioProcessorEditor()
 {
     stopTimer();
-    processor.notifyEditorClosed();
+    audioProcessor.notifyEditorClosed();
     tooltipWindow.reset();
     setLookAndFeel (nullptr);
 }
@@ -2085,7 +2029,7 @@ SmartDuckingAudioProcessorEditor::addSliderControl (
     result.label.setTooltip (tooltip);
     page.addAndMakeVisible (result);
     sliderAttachments.push_back (std::make_unique<SliderAttachment> (
-        processor.getParameterState(), parameterId, result.slider));
+        audioProcessor.getParameterState(), parameterId, result.slider));
 
     // SliderAttachment installs the parameter's default text conversion, so the
     // compact UI formatting must be restored after the attachment is created.
@@ -2129,7 +2073,7 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
     const auto diagnosticPaintStart = juce::Time::getHighResolutionTicks();
 #endif
-    processor.notifyEditorPaint();
+    audioProcessor.notifyEditorPaint();
     juce::ColourGradient backgroundGradient (backgroundSoftColour,
                                                0.0f,
                                                0.0f,
@@ -2170,8 +2114,10 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
                              0.62f);
 
     constexpr float pluginLogoX = static_cast<float> (titleX + titleWidth + 6);
+    const auto firstHeaderControlX = comparisonButtons[0].getX() > 0
+        ? comparisonButtons[0].getX() : voiceFormatLabel.getX();
     const auto pluginLogoRight = juce::jmax (pluginLogoX + 24.0f,
-                                              static_cast<float> (voiceFormatLabel.getX() - 8));
+                                              static_cast<float> (firstHeaderControlX - 8));
     const auto pluginLogoWidth = juce::jlimit (24.0f, 62.0f,
                                                 pluginLogoRight - pluginLogoX);
     const auto logoBounds = juce::Rectangle<float> (pluginLogoX, 17.0f,
@@ -2223,10 +2169,10 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
     auto rightMeters = juce::Rectangle<float> (rightX, meterTop, rightWidth, meterHeight);
     const auto leftHalf = (leftMeters.getWidth() - 6.0f) * 0.5f;
     const auto voiceChannels = getVoiceSpatialChannelCount() == 5 ? 5 : 2;
-    const auto outputChannels = processor.getOutputMeterChannelCount();
-    const auto* vlcMode = processor.getParameterState().getRawParameterValue (
+    const auto outputChannels = audioProcessor.getOutputMeterChannelCount();
+    const auto* vlcMode = audioProcessor.getParameterState().getRawParameterValue (
         smart_ducking::parameter_ids::vlcMode);
-    const auto vlcModeIsEnabled = processor.isSurroundVariant()
+    const auto vlcModeIsEnabled = audioProcessor.isSurroundVariant()
                                && vlcMode != nullptr
                                && vlcMode->load() >= 0.5f;
     auto mainInputMeter = leftMeters.removeFromLeft (leftHalf);
@@ -2237,7 +2183,7 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
                      "MAIN IN",
                      displayedMainPeaks,
                      secondaryTextColour,
-                     processor.isSurroundVariant() ? 5 : 2,
+                     audioProcessor.isSurroundVariant() ? 5 : 2,
                      nullptr,
                      nullptr,
                      vlcModeIsEnabled);
@@ -2266,7 +2212,7 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
     graphics.setColour (borderColour);
     graphics.drawRoundedRectangle (lowerBounds.reduced (0.5f), 10.0f, 1.0f);
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
-    processor.recordEditorPaintDuration (static_cast<std::uint64_t> (
+    audioProcessor.recordEditorPaintDuration (static_cast<std::uint64_t> (
         juce::Time::getHighResolutionTicks() - diagnosticPaintStart));
 #endif
 }
@@ -2289,7 +2235,7 @@ void SmartDuckingAudioProcessorEditor::resized()
                                    .withSizeKeepingCentre (width, height));
     };
 
-    if (processor.isSurroundVariant())
+    if (audioProcessor.isSurroundVariant())
     {
         placeHeaderControl (dropLfeToggle, 88, 34);
         header.removeFromRight (4);
@@ -2300,6 +2246,10 @@ void SmartDuckingAudioProcessorEditor::resized()
     placeHeaderControl (voiceFormatChoice, 112, 38);
     header.removeFromRight (4);
     placeHeaderControl (voiceFormatLabel, 45, 28);
+    header.removeFromRight (8);
+    placeHeaderControl (comparisonButtons[1], 32, 32);
+    header.removeFromRight (3);
+    placeHeaderControl (comparisonButtons[0], 32, 32);
 
     auto stageRow = bounds.removeFromTop (54).reduced (12, 5);
     stageControlPanel.setBounds (stageRow);
@@ -2353,12 +2303,12 @@ void SmartDuckingAudioProcessorEditor::resized()
 
 void SmartDuckingAudioProcessorEditor::mouseDown (const juce::MouseEvent& event)
 {
-    if (! processor.isSurroundVariant()
+    if (! audioProcessor.isSurroundVariant()
         || ! event.mods.isPopupMenu()
         || ! mainInputMeterBounds.contains (event.position))
         return;
 
-    auto* parameter = processor.getParameterState().getParameter (
+    auto* parameter = audioProcessor.getParameterState().getParameter (
         smart_ducking::parameter_ids::vlcMode);
 
     if (parameter == nullptr)
@@ -2398,7 +2348,7 @@ void SmartDuckingAudioProcessorEditor::mouseDown (const juce::MouseEvent& event)
             if ((result != 1 && result != 2) || safeThis == nullptr)
                 return;
 
-            if (auto* vlcParameter = safeThis->processor.getParameterState().getParameter (
+            if (auto* vlcParameter = safeThis->audioProcessor.getParameterState().getParameter (
                     smart_ducking::parameter_ids::vlcMode))
             {
                 const auto requestedValue = result == 2 ? 1.0f : 0.0f;
@@ -2440,7 +2390,7 @@ void SmartDuckingAudioProcessorEditor::setAdvancedPage (AdvancedPage newPage)
 
 void SmartDuckingAudioProcessorEditor::saveUiState()
 {
-    auto& state = processor.getParameterState().state;
+    auto& state = audioProcessor.getParameterState().state;
     state.setProperty ("uiEditorMode", static_cast<int> (editorMode), nullptr);
     state.setProperty ("uiAdvancedPage", static_cast<int> (advancedPage), nullptr);
     state.setProperty ("uiMatrixSymmetryLink",
@@ -2450,7 +2400,7 @@ void SmartDuckingAudioProcessorEditor::saveUiState()
 
 void SmartDuckingAudioProcessorEditor::restoreUiState()
 {
-    const auto& state = processor.getParameterState().state;
+    const auto& state = audioProcessor.getParameterState().state;
     editorMode = static_cast<EditorMode> (juce::jlimit (
         0, 1, static_cast<int> (state.getProperty ("uiEditorMode", 0))));
     advancedPage = static_cast<AdvancedPage> (juce::jlimit (
@@ -2489,7 +2439,7 @@ void SmartDuckingAudioProcessorEditor::mirrorMatrixEdit (size_t sourceIndex)
 
 void SmartDuckingAudioProcessorEditor::setMonitorMode (smart_ducking::MonitorMode requestedMode)
 {
-    auto* parameter = processor.getParameterState().getParameter (
+    auto* parameter = audioProcessor.getParameterState().getParameter (
         smart_ducking::parameter_ids::monitorMode);
 
     if (parameter == nullptr)
@@ -2511,7 +2461,7 @@ void SmartDuckingAudioProcessorEditor::setMonitorMode (smart_ducking::MonitorMod
 
 void SmartDuckingAudioProcessorEditor::updateStageButtons()
 {
-    const auto* monitor = processor.getParameterState().getRawParameterValue (
+    const auto* monitor = audioProcessor.getParameterState().getRawParameterValue (
         smart_ducking::parameter_ids::monitorMode);
     const auto mode = static_cast<smart_ducking::MonitorMode> (juce::jlimit (
         0, 6, monitor != nullptr ? juce::roundToInt (monitor->load()) : 0));
@@ -2629,14 +2579,14 @@ void SmartDuckingAudioProcessorEditor::layoutAdvancedPanel()
 
 int SmartDuckingAudioProcessorEditor::getVoiceSpatialChannelCount() const noexcept
 {
-    const auto* voiceFormat = processor.getParameterState().getRawParameterValue (
+    const auto* voiceFormat = audioProcessor.getParameterState().getRawParameterValue (
         smart_ducking::parameter_ids::voiceFormat);
     return voiceFormat != nullptr && voiceFormat->load() >= 0.5f ? 5 : 3;
 }
 
 int SmartDuckingAudioProcessorEditor::getMainSpatialChannelCount() const noexcept
 {
-    return processor.isSurroundVariant() ? 5 : 3;
+    return audioProcessor.isSurroundVariant() ? 5 : 3;
 }
 
 void SmartDuckingAudioProcessorEditor::layoutMatrix()
@@ -2729,9 +2679,9 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
         editorVisualisationActive = shouldVisualise;
 
         if (editorVisualisationActive)
-            processor.notifyEditorOpened();
+            audioProcessor.notifyEditorOpened();
         else
-            processor.notifyEditorClosed();
+            audioProcessor.notifyEditorClosed();
     }
 
     if (! editorVisualisationActive)
@@ -2740,11 +2690,11 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
     const auto diagnosticTimerStart = juce::Time::getHighResolutionTicks();
 #endif
-    processor.notifyEditorTimer();
+    audioProcessor.notifyEditorTimer();
 
-    if (processor.isSurroundVariant())
+    if (audioProcessor.isSurroundVariant())
     {
-        if (const auto* downmix = processor.getParameterState().getRawParameterValue (
+        if (const auto* downmix = audioProcessor.getParameterState().getRawParameterValue (
                 smart_ducking::parameter_ids::downmix))
             dropLfeToggle.setEnabled (downmix->load() >= 0.5f);
     }
@@ -2754,39 +2704,39 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
         layoutMatrix();
 
     const std::array<float, 5> mainPeaks {
-        processor.getMainInputPeakLeft(),
-        processor.getMainInputPeakCentre(),
-        processor.getMainInputPeakRight(),
-        processor.getMainInputPeakLeftSurround(),
-        processor.getMainInputPeakRightSurround()
+        audioProcessor.getMainInputPeakLeft(),
+        audioProcessor.getMainInputPeakCentre(),
+        audioProcessor.getMainInputPeakRight(),
+        audioProcessor.getMainInputPeakLeftSurround(),
+        audioProcessor.getMainInputPeakRightSurround()
     };
     const std::array<float, 5> voicePeaks {
-        processor.getSidechainPeakLeft(),
-        processor.getSidechainPeakCentre(),
-        processor.getSidechainPeakRight(),
-        processor.getSidechainPeakLeftSurround(),
-        processor.getSidechainPeakRightSurround()
+        audioProcessor.getSidechainPeakLeft(),
+        audioProcessor.getSidechainPeakCentre(),
+        audioProcessor.getSidechainPeakRight(),
+        audioProcessor.getSidechainPeakLeftSurround(),
+        audioProcessor.getSidechainPeakRightSurround()
     };
     const std::array<float, 5> outputPeaks {
-        processor.getOutputPeakLeft(),
-        processor.getOutputPeakCentre(),
-        processor.getOutputPeakRight(),
-        processor.getOutputPeakLeftSurround(),
-        processor.getOutputPeakRightSurround()
+        audioProcessor.getOutputPeakLeft(),
+        audioProcessor.getOutputPeakCentre(),
+        audioProcessor.getOutputPeakRight(),
+        audioProcessor.getOutputPeakLeftSurround(),
+        audioProcessor.getOutputPeakRightSurround()
     };
     const std::array<float, 5> wideReduction {
-        processor.getGainReductionLeftDb(),
-        processor.getGainReductionCentreDb(),
-        processor.getGainReductionRightDb(),
-        processor.getGainReductionLeftSurroundDb(),
-        processor.getGainReductionRightSurroundDb()
+        audioProcessor.getGainReductionLeftDb(),
+        audioProcessor.getGainReductionCentreDb(),
+        audioProcessor.getGainReductionRightDb(),
+        audioProcessor.getGainReductionLeftSurroundDb(),
+        audioProcessor.getGainReductionRightSurroundDb()
     };
     const std::array<float, 5> spectralReduction {
-        processor.getSpectralReductionLeftDb(),
-        processor.getSpectralReductionCentreDb(),
-        processor.getSpectralReductionRightDb(),
-        processor.getSpectralReductionLeftSurroundDb(),
-        processor.getSpectralReductionRightSurroundDb()
+        audioProcessor.getSpectralReductionLeftDb(),
+        audioProcessor.getSpectralReductionCentreDb(),
+        audioProcessor.getSpectralReductionRightDb(),
+        audioProcessor.getSpectralReductionLeftSurroundDb(),
+        audioProcessor.getSpectralReductionRightSurroundDb()
     };
 
     for (size_t channel = 0; channel < displayedMainPeaks.size(); ++channel)
@@ -2806,7 +2756,12 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
     spectrumPanel->updateSpectrum();
 
     updateStageButtons();
-    const auto heavyPathActive = processor.isHeavyPathActive();
+    const auto comparisonSlot = audioProcessor.getComparisonSlot();
+    for (size_t slot = 0; slot < comparisonButtons.size(); ++slot)
+        comparisonButtons[slot].setToggleState (
+            static_cast<int> (slot) == comparisonSlot,
+            juce::dontSendNotification);
+    const auto heavyPathActive = audioProcessor.isHeavyPathActive();
     const auto duckingStateChanged = heavyPathActive != duckingIndicatorActive;
     duckingIndicatorActive = heavyPathActive;
 
@@ -2830,7 +2785,7 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
     if (duckingStateChanged)
         repaint (duckingLampBounds.getUnion (activityStatusBounds).expanded (6.0f).toNearestInt());
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
-    processor.recordEditorTimerDuration (static_cast<std::uint64_t> (
+    audioProcessor.recordEditorTimerDuration (static_cast<std::uint64_t> (
         juce::Time::getHighResolutionTicks() - diagnosticTimerStart));
 #endif
 }

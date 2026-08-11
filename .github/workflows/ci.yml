@@ -1,0 +1,68 @@
+name: Build, test and validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download pluginval 1.0.4
+        run: |
+          curl --fail --location \
+            https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_macOS.zip \
+            --output pluginval.zip
+          unzip -q pluginval.zip
+          xattr -dr com.apple.quarantine pluginval.app || true
+      - name: Configure Universal Release
+        run: >-
+          cmake --preset macos-release-universal
+          -DSMART_DUCKING_PLUGINVAL_EXECUTABLE=${{ github.workspace }}/pluginval.app/Contents/MacOS/pluginval
+      - name: Build and unit/factory test
+        run: |
+          cmake --build --preset macos-release-universal --parallel 4
+          ctest --preset macos-release-universal --output-on-failure
+      - name: pluginval strictness 5
+        run: cmake --build --preset macos-release-universal --target SmartDuckingPluginval
+      - name: Upload pluginval log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pluginval-macos
+          path: build-macos/release-universal/pluginval-results
+          if-no-files-found: ignore
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download pluginval 1.0.4
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_Windows.zip `
+            -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval
+      - name: Configure Release
+        shell: pwsh
+        run: >-
+          cmake -S . -B build-ci -G "Visual Studio 17 2022" -A x64
+          -DSMART_DUCKING_BUILD_TESTS=ON
+          -DSMART_DUCKING_PLUGINVAL_EXECUTABLE="${{ github.workspace }}/pluginval/pluginval.exe"
+      - name: Build and unit/factory test
+        shell: pwsh
+        run: |
+          cmake --build build-ci --config Release --parallel 4
+          ctest --test-dir build-ci -C Release --output-on-failure
+      - name: pluginval strictness 5
+        shell: pwsh
+        run: cmake --build build-ci --config Release --target SmartDuckingPluginval
+      - name: Upload pluginval log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pluginval-windows
+          path: build-ci/pluginval-results
+          if-no-files-found: ignore

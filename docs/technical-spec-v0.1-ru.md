@@ -1,6 +1,6 @@
 # Smart Ducking VST3
 
-> Актуализация физического контракта: один `Smart Ducking.vst3` регистрирует два класса — `Smart Ducking (Stereo)` с шинами `2 + 6 + 2` и `Smart Ducking (Surround)` с шинами `6 + 6 + 6`. Main задаётся классом без пользовательского переключателя; Voice выбирается как Stereo/Surround и всегда поступает по физической 5.1-шине. DSP-код обоих классов общий.
+> Актуализация для 1.0.0: этот файл сохраняет исходную структуру v0.1, но выполненные разделы приведены к фактическому release-поведению. Один `Smart Ducking.vst3` регистрирует два класса — `Smart Ducking (Stereo)` с шинами `2 + 6 + 2` и `Smart Ducking (Surround)` с шинами `6 + 6 + 6`. Main задаётся классом; Voice выбирается как Stereo/Surround и всегда поступает по физической 5.1-шине. DSP-код обоих классов общий.
 
 ## Техническая спецификация v0.1
 
@@ -32,14 +32,13 @@
 
 ## 3. Целевая платформа первой версии
 
-- ОС: Windows.
+- ОС: Windows и macOS.
 - Основной хост: REAPER.
-- Формат: VST3.
-- Основной вход: stereo.
-- Sidechain-вход: stereo.
-- Внутренняя раскладка обрабатываемой верхней полосы: LCR.
-- Предполагаемая реализация: C++ с отделённым от формата плагина DSP-ядром.
-- Переносимость на другие ОС и форматы желательна, но не является требованием v0.1.
+- Формат: VST3; Standalone собирается как вспомогательный target.
+- Main: fixed Stereo или 5.1 по выбранному plugin class.
+- Voice Sidechain: физически 5.1 с интерпретацией Stereo или Surround.
+- Внутренние spatial channels: L/C/R для Stereo, L/C/R/Ls/Rs для Surround; LFE исключён из detection/reduction.
+- Реализация: C++20 и JUCE 8.0.12 с общим DSP-ядром для обоих VST3 classes.
 
 ## 4. Общая схема сигнала
 
@@ -352,6 +351,7 @@ Default: `×2 Normal`.
 - Main всегда резервирует 50 ms задержки, а Voice задерживается на `50 ms − Lookahead`.
 - Общая заявленная задержка равна алгоритмической задержке STFT плюс фиксированные 50 ms.
 - Плагин сообщает задержку хосту для PDC.
+- Плагин сообщает конечный tail 2.0 s для дренирования delayed STFT, crossover и overlap-add после тишины на входе.
 - Задержка одинакова в состояниях SLEEP, WAKING, ACTIVE и TAIL.
 - Низкая полоса и dry-пути задерживаются до совпадения с обработанной ветвью.
 - Изменение Lookahead не меняет PDC; sidechain delay tap перемещается со сглаживанием.
@@ -372,7 +372,6 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 
 - дешёвый sidechain activity detector;
 - кроссовер и его состояния;
-- PCE оригинала;
 - кольцевые буферы истории и фиксированной задержки;
 - синхронизация main/sidechain;
 - необходимые envelope followers.
@@ -380,6 +379,7 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 Приостанавливаются:
 
 - FFT-анализ оригинала;
+- PCE оригинала и Voice;
 - расчёт спектральной gain mask;
 - inverse FFT и spectral overlap-add, если архитектура позволяет безопасно перейти на выровненный dry-путь.
 
@@ -428,6 +428,13 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 | Weight Q | 0.3–3.0 | 0.8 | предварительный default |
 | Matrix cells | 0–100% | см. матрицы | зафиксировано |
 | FFT Resolution | ×1 / ×2 / ×4 | ×2 | зафиксировано |
+| Processing Mode | QUALITY / NORMAL | NORMAL | реализовано, choice indices совместимы |
+| Voice Format | Stereo / Surround | Stereo | реализовано |
+| VLC Channel Order | Off / On | Off | только Surround Main |
+| Downmix | Off / On | Off | только Surround output |
+| Drop LFE | Off / On | Off | действует при Downmix |
+| Crossover/Wideband/Spectral Bypass | Off / On | Off | три независимых host-параметра |
+| Monitor Mode | Normal / Solo / Delta для трёх стадий | Normal | взаимо исключающий choice |
 
 Параметры, влияющие на gain или коэффициенты фильтров, должны сглаживаться и не создавать zipper noise.
 
@@ -487,28 +494,19 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 
 Текущий resizable editor постоянно отображает Main/Voice/Output meters и независимые wideband/spectral gain-reduction meters. Simple содержит Ducking Depth, Spectral Depth, Threshold, Attack, Hold и Release. Crossover, Spectral Low и Spectral High редактируются маркерами анализатора. Advanced разделён на Dynamics, Spectrum и Routing; Lookahead находится в Advanced/Dynamics, а FFT Resolution и `QUALITY / NORMAL` — в Advanced/Spectrum. Matrix использует линейные процентные слайдеры, общие заголовки строк/столбцов и динамические размеры 3×3, 3×5, 5×3 или 5×5.
 
-Weight Frequency/Gain/Q временно остаются отдельными Advanced/Spectrum controls. Согласованная следующая итерация переносит их на анализатор в виде одной интерактивной parametric-EQ node.
+Weight Frequency/Gain/Q редактируются одной parametric node: drag меняет frequency/gain, Shift-drag или wheel меняет Q, double-click возвращает defaults. `L/R LINK` — только инструмент ручного редактирования и не зеркалит host automation.
 
-Следующие функции полезны для дальнейшей разработки и настройки, но ещё не утверждены как обязательные элементы пользовательского интерфейса:
+Единая группа `B / S / Δ` управляет Crossover, Wideband и Spectral. Solo/Delta взаимно исключаются через Monitor Mode; Crossover Delta возвращает только защищённый low band без LFE, Wideband/Spectral Delta — удалённый сигнал своей стадии. Header показывает фактическое состояние heavy engine `SLEEP / ACTIVE`.
 
-- bypass Wideband Duck;
-- bypass Spectral Suppression;
-- Duck Delta;
-- Spectral Delta;
-- отображение активного режима sidechain-классификатора;
-- отображение состояния SLEEP/ACTIVE;
-- отображение PCE L/C/R levels;
-- delta monitoring для отдельных компонентов.
+Кнопки `A / B` хранят два полных parameter snapshot в project state. Host program list содержит `Default`, `Gentle Dialogue`, `Voice Focus` и `Fast Announcer`. Simple/Advanced mode, Advanced page и matrix-link также сохраняются.
 
-Для DSP-прототипа диагностические счётчики и delta-monitoring желательно предусмотреть даже при отсутствии финального GUI.
+DiagnosticLogger в diagnostic build публикует lock-free counters и записывает snapshot отдельным low-priority thread раз в 1000 ms. Production build отключает файловую диагностику; audio callback не выполняет I/O и блокировки.
 
-## 16. Отложено после первой stereo-версии
+## 16. Отложено после 1.0
 
-- Main и sidechain в LCR, 5.1 и 7.1.
-- Исключение LFE из детектирования и обработки surround-версии.
-- Сохранение отдельной низкой полосы каждого surround-канала — nice-to-have.
+- 7.1 и более широкие layouts.
 - AU и AAX.
-- macOS и другие ОС.
+- macOS notarization и installer; функциональная Universal VST3-сборка уже поддерживается.
 - Регулируемые параметры Phantom Center Extraction.
 - Альтернативные кривые между −60 dBFS и Voice Full — только при практической необходимости.
 - Voice-matched и hybrid spectral ducking.

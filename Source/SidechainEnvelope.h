@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <cmath>
 
 namespace smart_ducking
@@ -39,9 +41,15 @@ public:
         const auto clampedHoldMs = std::max (0.0f, newHoldMs);
         const auto clampedReleaseMs = std::max (0.0f, newReleaseMs);
 
-        if (clampedAttackMs == attackMs
-            && clampedHoldMs == holdMs
-            && clampedReleaseMs == releaseMs)
+        const auto unchanged = [] (float left, float right) noexcept
+        {
+            return std::bit_cast<std::uint32_t> (left)
+                == std::bit_cast<std::uint32_t> (right);
+        };
+
+        if (unchanged (clampedAttackMs, attackMs)
+            && unchanged (clampedHoldMs, holdMs)
+            && unchanged (clampedReleaseMs, releaseMs))
             return;
 
         attackMs = clampedAttackMs;

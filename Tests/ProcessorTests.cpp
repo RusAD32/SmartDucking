@@ -2,12 +2,15 @@
 #include <array>
 #include <functional>
 #include <iostream>
+#include <vector>
 
 #include "ParameterIds.h"
 #include "PluginProcessor.h"
 #include "LcrDuckMatrix.h"
+#include "PceHistory.h"
 #include "SidechainClassifier.h"
 #include "SidechainEnvelope.h"
+#include "SpectralFrameSmoothers.h"
 #include "SpectralSuppressor.h"
 
 namespace
@@ -235,6 +238,58 @@ ProcessorImpulseResult processImpulseWithLookahead (float lookaheadMs,
     return result;
 }
 
+std::array<std::vector<float>, 2> renderDeterministicSignal (
+    const std::vector<int>& blockPattern)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int totalSamples = 16384;
+    const auto maximumBlock = *std::max_element (blockPattern.begin(), blockPattern.end());
+    SmartDuckingAudioProcessor processor;
+    setParameter (processor, smart_ducking::parameter_ids::processingMode, 1.0f);
+    setParameter (processor, smart_ducking::parameter_ids::attackMs, 5.0f);
+    setParameter (processor, smart_ducking::parameter_ids::holdMs, 20.0f);
+    setParameter (processor, smart_ducking::parameter_ids::releaseMs, 80.0f);
+    processor.prepareToPlay (sampleRate, maximumBlock);
+    juce::MidiBuffer midi;
+    std::array<std::vector<float>, 2> output;
+    for (auto& channel : output)
+        channel.resize (totalSamples);
+
+    int processed = 0;
+    size_t patternIndex = 0;
+    while (processed < totalSamples)
+    {
+        const auto blockSize = juce::jmin (
+            blockPattern[patternIndex++ % blockPattern.size()],
+            totalSamples - processed);
+        juce::AudioBuffer<float> buffer (8, blockSize);
+        buffer.clear();
+
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto absoluteSample = processed + sample;
+            const auto phase = juce::MathConstants<double>::twoPi
+                             * 997.0 * static_cast<double> (absoluteSample) / sampleRate;
+            const auto input = 0.25f * static_cast<float> (std::sin (phase));
+            buffer.setSample (0, sample, input);
+            buffer.setSample (1, sample, 0.7f * input);
+            const auto voice = absoluteSample >= 2048 && absoluteSample < 12288 ? 0.4f : 0.0f;
+            buffer.setSample (2, sample, voice);
+            buffer.setSample (3, sample, 0.8f * voice);
+        }
+
+        processor.processBlock (buffer, midi);
+        for (int channel = 0; channel < 2; ++channel)
+            for (int sample = 0; sample < blockSize; ++sample)
+                output[static_cast<size_t> (channel)]
+                      [static_cast<size_t> (processed + sample)] = buffer.getSample (channel, sample);
+
+        processed += blockSize;
+    }
+
+    return output;
+}
+
 int findWidebandOnsetSample (float lookaheadMs)
 {
     constexpr double sampleRate = 48000.0;
@@ -291,6 +346,8 @@ int main()
 
     expect (processor.getName() == "Smart Ducking (Stereo)", "stereo plugin name");
     expect (surroundProcessor.getName() == "Smart Ducking (Surround)", "surround plugin name");
+    expect (approximatelyEqual (static_cast<float> (processor.getTailLengthSeconds()), 2.0f),
+            "finite two-second tail is reported to the host");
     expect (processor.getBusCount (true) == 2, "main plus sidechain input buses");
     expect (processor.getBusCount (false) == 1, "one output bus");
     expect (processor.getChannelCountOfBus (true, 0) == 2, "stereo variant Main is stereo");
@@ -384,6 +441,78 @@ int main()
     else
     {
         expect (false, "Monitor Mode parameter exists");
+    }
+
+    {
+        SmartDuckingAudioProcessor presetProcessor;
+        expect (presetProcessor.getNumPrograms() == 4,
+                "four factory programs are exposed to the host");
+        expect (presetProcessor.getProgramName (0) == "Default"
+                    && presetProcessor.getProgramName (1) == "Gentle Dialogue"
+                    && presetProcessor.getProgramName (2) == "Voice Focus"
+                    && presetProcessor.getProgramName (3) == "Fast Announcer",
+                "factory program names are stable");
+        presetProcessor.setCurrentProgram (1);
+        expect (presetProcessor.getCurrentProgram() == 1
+                    && approximatelyEqual (
+                        *presetProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::duckDepthDb),
+                        8.0f)
+                    && approximatelyEqual (
+                        *presetProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::releaseMs),
+                        320.0f),
+                "Gentle Dialogue factory program applies its documented values");
+        presetProcessor.setCurrentProgram (3);
+        expect (approximatelyEqual (
+                    *presetProcessor.getParameterState().getRawParameterValue (
+                        smart_ducking::parameter_ids::attackMs),
+                    10.0f)
+                    && approximatelyEqual (
+                        *presetProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::lookaheadMs),
+                        20.0f),
+                "Fast Announcer factory program applies its documented values");
+    }
+
+    {
+        SmartDuckingAudioProcessor comparisonProcessor;
+        setParameter (comparisonProcessor, smart_ducking::parameter_ids::duckDepthDb, 6.0f);
+        comparisonProcessor.switchComparisonSlot (1);
+        expect (comparisonProcessor.getComparisonSlot() == 1
+                    && approximatelyEqual (
+                        *comparisonProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::duckDepthDb),
+                        15.0f),
+                "switching to B stores A and recalls the initial B snapshot");
+        setParameter (comparisonProcessor, smart_ducking::parameter_ids::duckDepthDb, 12.0f);
+        comparisonProcessor.switchComparisonSlot (0);
+        expect (approximatelyEqual (
+                    *comparisonProcessor.getParameterState().getRawParameterValue (
+                        smart_ducking::parameter_ids::duckDepthDb),
+                    6.0f),
+                "A/B comparison recalls A");
+        comparisonProcessor.switchComparisonSlot (1);
+        expect (approximatelyEqual (
+                    *comparisonProcessor.getParameterState().getRawParameterValue (
+                        smart_ducking::parameter_ids::duckDepthDb),
+                    12.0f),
+                "A/B comparison recalls B");
+
+        juce::MemoryBlock comparisonState;
+        comparisonProcessor.getStateInformation (comparisonState);
+        SmartDuckingAudioProcessor restoredComparison;
+        restoredComparison.setStateInformation (comparisonState.getData(),
+                                                 static_cast<int> (comparisonState.getSize()));
+        restoredComparison.switchComparisonSlot (0);
+        const auto restoredA = restoredComparison.getParameterState().getRawParameterValue (
+            smart_ducking::parameter_ids::duckDepthDb)->load();
+        restoredComparison.switchComparisonSlot (1);
+        const auto restoredB = restoredComparison.getParameterState().getRawParameterValue (
+            smart_ducking::parameter_ids::duckDepthDb)->load();
+        expect (approximatelyEqual (restoredA, 6.0f)
+                    && approximatelyEqual (restoredB, 12.0f),
+                "both A/B snapshots survive project-state round-trip");
     }
 
     {
@@ -542,6 +671,7 @@ int main()
         const auto defaultLookaheadImpulse = processImpulseWithLookahead (10.0f);
         const auto maximumLookaheadImpulse = processImpulseWithLookahead (50.0f);
         const auto fortyFourOneImpulse = processImpulseWithLookahead (10.0f, 44100.0);
+        const auto eightyEightTwoImpulse = processImpulseWithLookahead (10.0f, 88200.0);
         const auto ninetySixImpulse = processImpulseWithLookahead (10.0f, 96000.0);
         constexpr int expectedLatency = 2048 + 2400;
 
@@ -550,8 +680,9 @@ int main()
                     && maximumLookaheadImpulse.latency == expectedLatency,
                 "Lookahead uses a fixed 50 ms PDC reserve at 48 kHz");
         expect (fortyFourOneImpulse.latency == 2048 + 2205
+                    && eightyEightTwoImpulse.latency == 4096 + 4410
                     && ninetySixImpulse.latency == 4096 + 4800,
-                "reported PDC follows STFT geometry plus 50 ms at 44.1 and 96 kHz");
+                "reported PDC follows STFT geometry plus 50 ms at 44.1, 88.2 and 96 kHz");
         expect (zeroLookaheadImpulse.maximumBeforeLatency < 1.0e-6f
                     && defaultLookaheadImpulse.maximumBeforeLatency < 1.0e-6f
                     && maximumLookaheadImpulse.maximumBeforeLatency < 1.0e-6f,
@@ -565,14 +696,18 @@ int main()
                                            0.002f),
                 "fixed Lookahead reserve reconstructs an impulse at reported latency");
         expect (fortyFourOneImpulse.maximumBeforeLatency < 1.0e-6f
+                    && eightyEightTwoImpulse.maximumBeforeLatency < 1.0e-6f
                     && ninetySixImpulse.maximumBeforeLatency < 1.0e-6f
                     && approximatelyEqual (fortyFourOneImpulse.sampleAtLatency,
+                                           1.0f,
+                                           0.002f)
+                    && approximatelyEqual (eightyEightTwoImpulse.sampleAtLatency,
                                            1.0f,
                                            0.002f)
                     && approximatelyEqual (ninetySixImpulse.sampleAtLatency,
                                            1.0f,
                                            0.002f),
-                "fixed Lookahead reserve reconstructs correctly at 44.1 and 96 kHz");
+                "fixed Lookahead reserve reconstructs correctly at 44.1, 88.2 and 96 kHz");
 
         const auto zeroLookaheadOnset = findWidebandOnsetSample (0.0f);
         const auto maximumLookaheadOnset = findWidebandOnsetSample (50.0f);
@@ -964,6 +1099,48 @@ int main()
                     && duringAutomation < beforeAutomation
                     && smoothedMatrixProcessor.getLastWidebandReductionDb (0) < 0.1f,
                 "matrix automation smooths final maximum-aggregated controls at frame rate");
+    }
+
+    {
+        smart_ducking::LinearFrameSmoother linearSmoother;
+        linearSmoother.reset (0.0f);
+        const auto first = linearSmoother.process (1.0f, 0.01f, 0.03f);
+        const auto second = linearSmoother.process (1.0f, 0.01f, 0.03f);
+        const auto third = linearSmoother.process (1.0f, 0.01f, 0.03f);
+        expect (approximatelyEqual (first, 1.0f / 3.0f)
+                    && approximatelyEqual (second, 2.0f / 3.0f)
+                    && approximatelyEqual (third, 1.0f),
+                "extracted frame smoother completes a bounded linear transition");
+
+        smart_ducking::SpatialControlSmoother spatialSmoother;
+        smart_ducking::LcrDuckMatrix::Controls target;
+        target.left = 1.0f;
+        target.rightSurround = 0.5f;
+        const auto spatialFirst = spatialSmoother.process (target, 0.01f, 0.035f);
+        const auto spatialSecond = spatialSmoother.process (target, 0.01f, 0.035f);
+        expect (spatialFirst.left > 0.0f && spatialFirst.left < spatialSecond.left
+                    && spatialSecond.left < 1.0f
+                    && approximatelyEqual (spatialFirst.rightSurround,
+                                           0.5f * spatialFirst.left),
+                "extracted spatial smoother advances all five controls coherently");
+
+        smart_ducking::PceHistory history;
+        history.resize (8);
+        history.crossReal[3] = 1.0f;
+        history.crossImaginary[4] = -1.0f;
+        history.powerLeft[5] = 2.0f;
+        history.powerRight[6] = 3.0f;
+        history.clear();
+        expect (history.crossReal.size() == 8
+                    && std::all_of (history.crossReal.begin(), history.crossReal.end(),
+                                    [] (float value) { return std::abs (value) < 1.0e-12f; })
+                    && std::all_of (history.crossImaginary.begin(), history.crossImaginary.end(),
+                                    [] (float value) { return std::abs (value) < 1.0e-12f; })
+                    && std::all_of (history.powerLeft.begin(), history.powerLeft.end(),
+                                    [] (float value) { return std::abs (value) < 1.0e-12f; })
+                    && std::all_of (history.powerRight.begin(), history.powerRight.end(),
+                                    [] (float value) { return std::abs (value) < 1.0e-12f; }),
+                "extracted PCE history resizes and clears its persistent state");
     }
 
     smart_ducking::SidechainEnvelope holdEnvelope;
@@ -1518,6 +1695,22 @@ int main()
 
             expect (stressOutputIsFinite, "PCE stress output remains finite across host block sizes");
         }
+    }
+
+    {
+        const auto fixedBlocks = renderDeterministicSignal ({ 128 });
+        const auto variableBlocks = renderDeterministicSignal (
+            { 1, 17, 63, 128, 257, 511, 31 });
+        auto maximumDifference = 0.0f;
+
+        for (size_t channel = 0; channel < fixedBlocks.size(); ++channel)
+            for (size_t sample = 0; sample < fixedBlocks[channel].size(); ++sample)
+                maximumDifference = std::max (
+                    maximumDifference,
+                    std::abs (fixedBlocks[channel][sample] - variableBlocks[channel][sample]));
+
+        expect (maximumDifference < 1.0e-5f,
+                "realtime and offline-style variable block renders are numerically equivalent");
     }
 
     setParameter (processor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);

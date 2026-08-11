@@ -1,10 +1,12 @@
-# Architecture snapshot — v0.1
+# Architecture snapshot — v1.0
 
-This file records the implementation boundary of the initial scaffold. The full Russian product/DSP specification remains the source of truth during prototyping.
+This file records the implementation boundary of the stable 1.0 release. The implementation plan and executable tests define the detailed behavioural contract.
 
-## Current spectral/LCR prototype
+## Spectral/LCR engine
 
 The current increment splits Main with a minimum-phase Linkwitz–Riley 8th-order crossover. Each branch uses four biquads because JUCE's ready-made Linkwitz–Riley processor provides up to a 4th-order response, rather than the required 8th order. The low branch is delayed and recombined without gain reduction. One synchronised STFT engine analyses Main and Voice on the same windows. Both are decomposed into L/C/R first; Voice L/C/R detectors then control direct L/C/R spectral masks and the maximum-aggregated wideband matrix before Main is reconstructed.
+
+`SpectralSuppressor` remains the orchestration boundary, while persistent PCE state and reusable frame/control smoothing live in `PceHistory.h` and `SpectralFrameSmoothers.h`. The extraction is protected by characterization tests and does not change the signal path.
 
 ## Plug-in classes and physical buses
 
@@ -64,6 +66,8 @@ reported latency = active STFT size + ceil(0.050 × sample rate)
 
 The sidechain delay tap moves over a short smoothing ramp. Main, protected low, processed high, downmix, and LFE remain aligned for every Lookahead value.
 
+The processor reports a finite two-second tail. This upper bound covers maximum Hold/Release configuration plus delayed STFT, crossover ringing, and overlap-add drain, preventing hosts from truncating buffered output after input silence.
+
 FFT Resolution and Processing Mode parameters have requested and active states. During playback the requested state remains pending. Geometry reset and host PDC notification occur only through a stopped/message-thread configuration path or the next `prepareToPlay`, never directly from `processBlock`. If a DAW stops audio callbacks before reporting the stopped state, four unchanged 20 Hz timer observations (about 200 ms of callback quiescence) provide the stopped fallback.
 
 ## LCR wideband matrix
@@ -109,3 +113,32 @@ and Drop LFE use 30 ms sample ramps. Editor mode, Advanced page, and matrix-link
 choice are stored as non-automatable APVTS root properties. The Output meter
 exposes five spatial channels for normal Surround output and only L/R while
 forced downmix is selected.
+
+## Programs and A/B state
+
+The VST3 factory program list exposes four complete starting points: `Default`,
+`Gentle Dialogue`, `Voice Focus`, and `Fast Announcer`. Selecting a program first
+restores all parameter defaults and then applies the preset overrides, so no
+values leak from the previously selected program.
+
+The editor header has two comparison slots. Switching slots captures the current
+normalised value of every host parameter and restores the other snapshot. Both
+snapshots, the active slot, the current factory-program index, and the ordinary
+APVTS/UI state are serialized in the project state. Snapshot storage is allocated
+outside `processBlock`.
+
+## Validation and realtime boundary
+
+`SmartDucking.Processor` exercises the DSP/state/editor contract, including
+random and boundary block sizes and realtime/offline-style numerical
+equivalence. `SmartDucking.VST3Factory` loads the produced binary and verifies
+both component classes, layouts, metadata, state, processing, and default PDC.
+The optional `SmartDuckingPluginval` target validates the finished bundle with
+an external pluginval executable; pluginval is never linked into or invoked by
+the plug-in. `SmartDuckingBenchmark` measures the full Stereo/Surround,
+QUALITY/NORMAL, x1/x2/x4, visualisation-off/on CPU matrix.
+
+The audio callback performs no filesystem access, locking, container resizing,
+FFT construction, or GUI calls. Parameters are read through atomics; all large
+buffers, histories, delay lines, and FFT geometries are prepared before steady-
+state processing.

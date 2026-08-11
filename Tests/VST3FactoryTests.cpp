@@ -171,6 +171,13 @@ bool checkComponentBuses (Steinberg::IPluginFactory& factory,
     auto* component = static_cast<Steinberg::Vst::IComponent*> (object);
     bool ok = true;
 
+    if (component->initialize (nullptr) != Steinberg::kResultOk)
+    {
+        std::cerr << expected.name << " could not be initialized\n";
+        component->release();
+        return false;
+    }
+
     if (component->getBusCount (Steinberg::Vst::kAudio, Steinberg::Vst::kInput) != 2
         || component->getBusCount (Steinberg::Vst::kAudio, Steinberg::Vst::kOutput) != 1)
     {
@@ -206,6 +213,52 @@ bool checkComponentBuses (Steinberg::IPluginFactory& factory,
         ok = false;
     }
 
+    void* processorObject = nullptr;
+    if (component->queryInterface (Steinberg::Vst::IAudioProcessor::iid,
+                                   &processorObject) != Steinberg::kResultOk
+        || processorObject == nullptr)
+    {
+        std::cerr << expected.name << " does not expose IAudioProcessor\n";
+        ok = false;
+    }
+    else
+    {
+        auto* audioProcessor = static_cast<Steinberg::Vst::IAudioProcessor*> (processorObject);
+        Steinberg::Vst::ProcessSetup setup {};
+        setup.processMode = Steinberg::Vst::kRealtime;
+        setup.symbolicSampleSize = Steinberg::Vst::kSample32;
+        setup.maxSamplesPerBlock = 512;
+        setup.sampleRate = 48000.0;
+
+        if (audioProcessor->setupProcessing (setup) != Steinberg::kResultOk
+            || component->setActive (true) != Steinberg::kResultOk)
+        {
+            std::cerr << expected.name << " could not enter active 48 kHz processing\n";
+            ok = false;
+        }
+        else
+        {
+            constexpr Steinberg::uint32 expectedDefaultLatency = 2048 + 2400;
+            if (audioProcessor->getLatencySamples() != expectedDefaultLatency)
+            {
+                std::cerr << expected.name << " reports unexpected default latency: "
+                          << audioProcessor->getLatencySamples() << '\n';
+                ok = false;
+            }
+            constexpr Steinberg::uint32 expectedTailSamples = 2 * 48000;
+            if (audioProcessor->getTailSamples() != expectedTailSamples)
+            {
+                std::cerr << expected.name << " reports unexpected tail: "
+                          << audioProcessor->getTailSamples() << '\n';
+                ok = false;
+            }
+            component->setActive (false);
+        }
+
+        audioProcessor->release();
+    }
+
+    component->terminate();
     component->release();
     return ok;
 }
@@ -273,9 +326,27 @@ int main (int argc, char** argv)
                     continue;
                 }
 
+                if (std::string (audioClasses[pluginIndex].vendor) != "OnWave"
+                    || std::string (audioClasses[pluginIndex].version) != "1.0.0"
+                    || std::string (audioClasses[pluginIndex].subCategories)
+                           .find ("Dynamics") == std::string::npos)
+                {
+                    std::cerr << expected[pluginIndex].name
+                              << " has incorrect release metadata\n";
+                    ok = false;
+                }
+
                 ok = checkComponentBuses (*factory2,
                                           audioClasses[pluginIndex],
                                           expected[pluginIndex]) && ok;
+            }
+
+            if (std::memcmp (audioClasses[0].cid,
+                             audioClasses[1].cid,
+                             sizeof (audioClasses[0].cid)) == 0)
+            {
+                std::cerr << "Stereo and Surround component IDs must be distinct\n";
+                ok = false;
             }
         }
     }

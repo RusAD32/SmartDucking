@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -84,13 +85,21 @@ public:
     [[nodiscard]] bool acceptsMidi() const override { return false; }
     [[nodiscard]] bool producesMidi() const override { return false; }
     [[nodiscard]] bool isMidiEffect() const override { return false; }
-    [[nodiscard]] double getTailLengthSeconds() const override { return 0.0; }
+    // Covers the maximum Hold/Release configuration plus delayed STFT,
+    // crossover ringing and overlap-add drain after input becomes silent.
+    [[nodiscard]] double getTailLengthSeconds() const override { return 2.0; }
 
-    [[nodiscard]] int getNumPrograms() override { return 1; }
-    [[nodiscard]] int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    [[nodiscard]] const juce::String getProgramName (int) override { return {}; }
+    [[nodiscard]] int getNumPrograms() override;
+    [[nodiscard]] int getCurrentProgram() override;
+    void setCurrentProgram (int) override;
+    [[nodiscard]] const juce::String getProgramName (int) override;
     void changeProgramName (int, const juce::String&) override {}
+
+    void switchComparisonSlot (int slot);
+    [[nodiscard]] int getComparisonSlot() const noexcept
+    {
+        return currentComparisonSlot.load (std::memory_order_relaxed);
+    }
 
     void getStateInformation (juce::MemoryBlock&) override;
     void setStateInformation (const void*, int) override;
@@ -330,6 +339,9 @@ private:
     [[nodiscard]] int getTotalLatencySamples() const noexcept;
     void updateTransportState();
     static void removeLegacyState (juce::ValueTree&);
+    void captureComparisonSlot (int);
+    void restoreComparisonSlot (int);
+    void initialiseComparisonSlots();
 
     const smart_ducking::PluginVariant variant;
     juce::AudioProcessorValueTreeState parameters;
@@ -357,6 +369,9 @@ private:
     std::atomic<float>* spectralBypassParameter = nullptr;
     std::atomic<float>* monitorModeParameter = nullptr;
     std::array<std::atomic<float>*, 25> matrixParameters {};
+    std::array<std::vector<float>, 2> comparisonSlots;
+    std::atomic<int> currentComparisonSlot { 0 };
+    std::atomic<int> currentFactoryProgram { 0 };
 
     smart_ducking::LinkwitzRiley8Crossover crossover;
     smart_ducking::StereoSpectralLcrProcessor spectralLcrProcessor;

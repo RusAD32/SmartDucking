@@ -77,7 +77,7 @@ private:
                                  const std::array<float, 5>* spectralReductionValues = nullptr,
                                  bool highlightLabel = false);
 
-    SmartDuckingAudioProcessor& processor;
+    SmartDuckingAudioProcessor& audioProcessor;
     std::unique_ptr<OnWaveLookAndFeel> onWaveLookAndFeel;
     std::unique_ptr<juce::TooltipWindow> tooltipWindow;
     std::unique_ptr<SpectrumPanel> spectrumPanel;
@@ -85,6 +85,9 @@ private:
 
     juce::TextButton simpleModeButton { "SIMPLE" };
     juce::TextButton advancedModeButton { "ADVANCED" };
+    std::array<juce::TextButton, 2> comparisonButtons {
+        juce::TextButton { "A" }, juce::TextButton { "B" }
+    };
     juce::Component stageControlPanel;
     std::array<juce::Label, 3> stageLabels;
     std::array<juce::TextButton, 9> stageButtons {
@@ -127,7 +130,6 @@ private:
     std::array<juce::Label, 5> matrixRowHeaders;
     std::array<juce::Label, 5> matrixColumnHeaders;
     juce::TextButton matrixDiagonalButton { "DIAGONAL" };
-    juce::TextButton matrixCentreButton { "CENTRE FOCUS" };
     juce::TextButton matrixResetButton { "RESET" };
     juce::TextButton matrixSymmetryButton { "L/R LINK" };
 
