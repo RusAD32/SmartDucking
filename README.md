@@ -64,7 +64,7 @@ cmake --preset macos-release-universal \
 cmake --build --preset macos-release-universal --target SmartDuckingPluginval
 ```
 
-This runs the finished bundle at strictness 5. Normal configure, build, and test commands do not require pluginval. GitHub Actions runs pluginval, unit tests, and direct VST3 factory tests on macOS, Windows, and Linux. A release CPU matrix can be run with:
+This runs the finished bundle at strictness 5. Normal configure, build, and test commands do not require pluginval. GitHub Actions runs pluginval, unit tests, and direct VST3 factory tests on macOS, Windows, and Linux. The headless Linux pluginval run uses `SMART_DUCKING_PLUGINVAL_SKIP_GUI_TESTS=ON`; editor creation and behaviour remain covered by the Linux unit/factory suite. A release CPU matrix can be run with:
 
 ```sh
 cmake --build --preset macos-release-universal --target SmartDuckingBenchmark

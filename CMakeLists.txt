@@ -182,6 +182,8 @@ endif()
 option(SMART_DUCKING_BUILD_TESTS "Build the Smart Ducking scaffold tests" ON)
 set(SMART_DUCKING_PLUGINVAL_EXECUTABLE "" CACHE FILEPATH
     "Optional pluginval executable used by the SmartDuckingPluginval target")
+option(SMART_DUCKING_PLUGINVAL_SKIP_GUI_TESTS
+    "Skip pluginval tests that instantiate the plugin editor" OFF)
 
 if (SMART_DUCKING_PLUGINVAL_EXECUTABLE)
     if (NOT EXISTS "${SMART_DUCKING_PLUGINVAL_EXECUTABLE}")
@@ -200,10 +202,17 @@ if (SMART_DUCKING_PLUGINVAL_EXECUTABLE)
     else()
         set(smart_ducking_pluginval_target "$<TARGET_FILE:SmartDucking_VST3>")
     endif()
+
+    set(smart_ducking_pluginval_arguments)
+    if (SMART_DUCKING_PLUGINVAL_SKIP_GUI_TESTS)
+        list(APPEND smart_ducking_pluginval_arguments --skip-gui-tests)
+    endif()
+
     add_custom_target(SmartDuckingPluginval
         COMMAND ${CMAKE_COMMAND} -E make_directory "${smart_ducking_pluginval_output}"
         COMMAND "${SMART_DUCKING_PLUGINVAL_EXECUTABLE}"
             --strictness-level 5
+            ${smart_ducking_pluginval_arguments}
             --validate-in-process
             --output-dir "${smart_ducking_pluginval_output}"
             "${smart_ducking_pluginval_target}"
