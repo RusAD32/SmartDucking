@@ -4,6 +4,12 @@ project(SmartDucking VERSION 1.0.0 LANGUAGES C CXX)
 
 if (APPLE)
     enable_language(OBJCXX)
+
+    # JUCE always adds conditional ARA/LV2 translation units. They are
+    # intentionally empty for this VST3-only build, so suppress only Apple's
+    # harmless "has no symbols" ranlib diagnostic for static archives.
+    set(CMAKE_CXX_ARCHIVE_FINISH
+        "<CMAKE_RANLIB> -no_warning_for_no_symbols <TARGET>")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)

@@ -1062,7 +1062,7 @@ int main()
     expect (approximatelyEqual (combinedMatrixControls.right, 0.6f),
             "matrix uses maximum detector contribution for original R");
 
-    for (const auto [rows, columns] : std::array<std::pair<int, int>, 4> {
+    for (const auto& [rows, columns] : std::array<std::pair<int, int>, 4> {
              std::pair { 3, 3 }, std::pair { 3, 5 },
              std::pair { 5, 3 }, std::pair { 5, 5 } })
     {

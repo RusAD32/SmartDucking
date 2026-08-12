@@ -38,6 +38,7 @@ public:
         smart_ducking::PluginVariant = smart_ducking::PluginVariant::stereo);
     ~SmartDuckingAudioProcessor() override;
 
+    using juce::AudioProcessor::processBlock;
     void prepareToPlay (double sampleRate, int maximumExpectedSamplesPerBlock) override;
     void releaseResources() override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
