@@ -8,7 +8,7 @@ jobs:
   macos:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Download pluginval 1.0.4
         run: |
           curl --fail --location \
@@ -33,7 +33,7 @@ jobs:
             "build-macos/release-universal/SmartDucking_artefacts/Release/VST3/Smart Ducking.vst3" \
             "dist/Smart Ducking.vst3"
       - name: Upload macOS Universal VST3
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Smart-Ducking-VST3-macOS-universal
           path: dist/*
@@ -41,7 +41,7 @@ jobs:
           retention-days: 30
       - name: Upload pluginval log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pluginval-macos
           path: build-macos/release-universal/pluginval-results
@@ -50,7 +50,7 @@ jobs:
   windows:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Download pluginval 1.0.4
         shell: pwsh
         run: |
@@ -82,7 +82,7 @@ jobs:
             "build-ci/SmartDucking_artefacts/Release/VST3/Smart Ducking.vst3" `
             "dist/Smart Ducking.vst3"
       - name: Upload Windows x64 VST3
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Smart-Ducking-VST3-Windows-x64
           path: dist/*
@@ -90,7 +90,7 @@ jobs:
           retention-days: 30
       - name: Upload pluginval log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pluginval-windows
           path: build-ci/pluginval-results
@@ -99,7 +99,7 @@ jobs:
   linux:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install JUCE Linux dependencies
         run: |
           sudo apt-get update
@@ -132,7 +132,7 @@ jobs:
             "build-linux/release-x64/SmartDucking_artefacts/Release/VST3/Smart Ducking.vst3" \
             "dist/Smart Ducking.vst3"
       - name: Upload Linux x64 VST3
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Smart-Ducking-VST3-Linux-x64
           path: dist/*
