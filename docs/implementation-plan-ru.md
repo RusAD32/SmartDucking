@@ -2,9 +2,9 @@
 
 Статус документа: этапы A–D завершены, план доведён до стабильного релиза `1.0.0`.
 
-Дата актуализации: 12 августа 2026 года.
+Дата актуализации: 13 августа 2026 года.
 
-Прогресс: этап A реализован 10 августа 2026 года, ручной smoke-test сборки в REAPER пройден пользователем 12 августа. Этап B реализован 12 августа 2026 года: добавлены параметры и единая UI-группа `B / S / Δ`, взаимно исключающий Monitor Mode, сглаженные Bypass/Solo/Delta paths с постоянной PDC, low-only Crossover Delta без LFE и фактический индикатор `SLEEP / ACTIVE`. Этап C реализован 12 августа 2026 года: weighting перенесён на интерактивную ноду, пять конечных matrix controls сглаживаются на частоте STFT, добавлен ручной `L/R LINK`, routing-aware Output meter, сохранение UI-state и короткие переходы Voice/VLC/Downmix/LFE.
+Прогресс: этап A реализован 10 августа 2026 года, ручной smoke-test сборки в REAPER пройден пользователем 12 августа. Этап B реализован 12 августа и уточнён 13 августа: добавлены независимые stage bypass, взаимно исключающий Monitor Mode, сглаженные paths с постоянной PDC, комплементарные `LOW / HIGH` для Crossover без LFE, фактический индикатор `SLEEP / ACTIVE` и стандартный Global Bypass с latency-aligned raw Main path. Этап C реализован 12 августа 2026 года: weighting перенесён на интерактивную ноду, пять конечных matrix controls сглаживаются на частоте STFT, добавлен ручной `L/R LINK`, routing-aware Output meter, сохранение UI-state и короткие переходы Voice/VLC/Downmix/LFE.
 
 Этап D завершён 12 августа: расширены processor/factory tests, добавлены pluginval/CI и CPU benchmark, вынесены PCE history и frame smoothers, удалён dead UI code, реализованы factory presets и persistent A/B, синхронизирована документация.
 
@@ -173,7 +173,7 @@ Voice Format, VLC order, Downmix и Drop LFE не меняют FFT size, но и
 
 Проверяются одиночные изменения ячейки, Reset, Diagonal, Symmetry Link, host automation и несколько одновременно активных Voice-каналов.
 
-## 6. Bypass, Solo и Delta основных стадий
+## 6. Bypass и monitoring основных стадий
 
 Эта возможность реализуется одной связанной итерацией, потому что DSP-маршрутизация и элементы UI должны проектироваться совместно.
 
@@ -183,7 +183,7 @@ Voice Format, VLC order, Downmix и Drop LFE не меняют FFT size, но и
 2. Wideband;
 3. Spectral.
 
-В интерфейсе они располагаются рядом, и каждая получает кнопки `B`, `S`, `Δ`.
+В интерфейсе они располагаются рядом. Первая кнопка каждой стадии — иконка bypass. Crossover получает `LOW / HIGH`, Wideband и Spectral — `S / Δ`.
 
 ### 6.1 Bypass
 
@@ -194,10 +194,13 @@ Voice Format, VLC order, Downmix и Drop LFE не меняют FFT size, но и
 - тяжёлые вычисления отключённой стадии не выполняются, если они не нужны анализатору или delta monitoring;
 - PDC и временное выравнивание не меняются.
 
-### 6.2 Solo
+### 6.2 Solo и полосы Crossover
 
 - одновременно активен не более чем один Solo;
 - Solo оставляет активной выбранную стадию и обходит две остальные;
+- Crossover LOW воспроизводит защищённую низкую полосу;
+- Crossover HIGH воспроизводит комплементарную обрабатываемую высокую полосу;
+- LFE не включается ни в одну Crossover monitor-полосу;
 - инфраструктурные PCE, downmix, channel mapping и latency alignment продолжают работать;
 - переход Normal ↔ Solo выполняется без щелчка.
 
@@ -206,20 +209,18 @@ Voice Format, VLC order, Downmix и Drop LFE не меняют FFT size, но и
 - одновременно активен не более чем один Delta monitor;
 - Wideband Delta воспроизводит сигнал, удалённый wideband stage;
 - Spectral Delta воспроизводит сигнал, удалённый spectral stage;
-- Crossover Delta намеренно не является математическим null-difference;
-- Crossover Delta воспроизводит защищённую низкую полосу, чтобы пользователь мог подобрать частоту раздела и не оставить в защищённом диапазоне лишние элементы;
-- LFE в Surround Crossover Delta не включается, иначе он мешает оценивать crossover основных каналов;
 - downmix и channel mapping применяются к monitor output предсказуемо;
 - включение Delta не меняет PDC.
 
 Для DAW предпочтительна следующая модель параметров:
 
 - три независимых boolean bypass-параметра;
-- один choice-параметр Monitor Mode: Normal, Crossover Solo, Crossover Delta, Wideband Solo, Wideband Delta, Spectral Solo, Spectral Delta.
+- один choice-параметр Monitor Mode: Normal, Crossover Low, Crossover High, Wideband Solo, Wideband Delta, Spectral Solo, Spectral Delta;
+- отдельный boolean Global Bypass, помеченный как стандартный VST3 bypass.
 
 Так host automation не сможет создать неоднозначную комбинацию нескольких Solo/Delta, а UI по-прежнему будет выглядеть как три группы кнопок.
 
-В режиме QUALITY Crossover Delta использует существующий delayed low path. В режиме NORMAL та же защищённая полоса должна быть реконструирована через complementary FFT-domain crossover, чтобы мониторинг соответствовал реально используемой кривой.
+В режиме QUALITY Crossover LOW/HIGH используют существующие delayed LR8 branches. В режиме NORMAL обе полосы строятся complementary FFT-domain crossover, чтобы мониторинг соответствовал реально используемой кривой. Global Bypass плавно переключается на raw Main, задержанный на фиксированный Lookahead reserve и текущую STFT latency; он обходит также VLC mapping, downmix и Drop LFE, сохраняется в project state, но не входит в factory preset и A/B recall.
 
 ## 7. SLEEP/ACTIVE и диагностическая индикация
 
@@ -304,7 +305,8 @@ Presets и A/B выполняются после удаления legacy-пар�
 - автоматизация Lookahead без изменения reported latency;
 - отсутствие пропуска начала первой фонемы после SLEEP;
 - Bypass/Solo/Delta каждой стадии;
-- Crossover Delta как low-band listen и отсутствие LFE в этом monitor mode;
+- Crossover LOW/HIGH как комплементарные monitor-полосы без LFE;
+- Global Bypass как стандартный host-параметр, плавный exact-latency dry path и обход output routing;
 - матричное сглаживание и maximum-агрегация;
 - L/R Symmetry mappings для 3×3, 3×5, 5×3 и 5×5;
 - сохранение/восстановление новых параметров и UI-state;
@@ -397,9 +399,10 @@ pluginval подключается только как dev/CI-инструмен
 
 1. [x] Ввести параметры Bypass и Monitor Mode.
 2. [x] Реализовать DSP Bypass/Solo/Delta для Crossover, Wideband и Spectral.
-3. [x] Добавить единую UI-группу `B / S / Δ`.
+3. [x] Добавить единую UI-группу с иконкой bypass, `LOW / HIGH` для Crossover и `S / Δ` для Wideband/Spectral.
 4. [x] Проверить click-free transitions и неизменную PDC.
 5. [x] Перевести верхний индикатор на фактический SLEEP/ACTIVE.
+6. [x] Добавить стандартный Global Bypass рядом с SLEEP/ACTIVE и latency-aligned dry path.
 
 ### Этап C — анализатор и матрица
 
@@ -431,8 +434,8 @@ pluginval подключается только как dev/CI-инструмен
 - Lookahead действительно создаёт выбранное опережение и не меняет PDC;
 - Sidechain Pre-Gain отсутствует в параметрах DAW;
 - host показывает `QUALITY / NORMAL`;
-- Bypass/Solo/Delta работают без щелчков и с постоянной задержкой;
-- Crossover Delta воспроизводит только защищённый low band без LFE;
+- stage/global bypass и monitor modes работают без щелчков и с постоянной задержкой;
+- Crossover LOW/HIGH воспроизводят комплементарные полосы без LFE;
 - matrix automation не создаёт zipper noise;
 - SLEEP/ACTIVE отражает фактическое состояние тяжёлой ветви;
 - закрытый GUI не оставляет активной визуализационную FFT-нагрузку;

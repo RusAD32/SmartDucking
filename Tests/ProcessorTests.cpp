@@ -207,13 +207,16 @@ SpatialToneResult processSpatialTone (SmartDuckingAudioProcessor& processor,
 }
 
 ProcessorImpulseResult processImpulseWithLookahead (float lookaheadMs,
-                                                     double sampleRate = 48000.0)
+                                                     double sampleRate = 48000.0,
+                                                     bool globalBypass = false)
 {
     SmartDuckingAudioProcessor processor;
     setParameter (processor, smart_ducking::parameter_ids::processingMode, 1.0f);
     setParameter (processor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
     setParameter (processor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
     setParameter (processor, smart_ducking::parameter_ids::lookaheadMs, lookaheadMs);
+    setParameter (processor, smart_ducking::parameter_ids::globalBypass,
+                  globalBypass ? 1.0f : 0.0f);
     processor.prepareToPlay (sampleRate, 1);
 
     ProcessorImpulseResult result;
@@ -447,6 +450,12 @@ int main()
                     0.0f),
             "all stage bypass parameters default to off");
     expect (approximatelyEqual (
+                *state.getRawParameterValue (smart_ducking::parameter_ids::globalBypass),
+                0.0f)
+                && processor.getBypassParameter()
+                       == state.getParameter (smart_ducking::parameter_ids::globalBypass),
+            "global bypass defaults off and is exposed as the host bypass parameter");
+    expect (approximatelyEqual (
                 *state.getRawParameterValue (smart_ducking::parameter_ids::monitorMode),
                 0.0f),
             "Monitor Mode defaults to Normal");
@@ -467,11 +476,11 @@ int main()
             smart_ducking::parameter_ids::monitorMode))
     {
         const auto choices = monitorMode->getAllValueStrings();
-        expect (choices == juce::StringArray { "Normal", "Crossover Solo",
-                                               "Crossover Delta", "Wideband Solo",
+        expect (choices == juce::StringArray { "Normal", "Crossover Low",
+                                               "Crossover High", "Wideband Solo",
                                                "Wideband Delta", "Spectral Solo",
                                                "Spectral Delta" },
-                "host Monitor Mode exposes one unambiguous Solo/Delta choice");
+                "host Monitor Mode exposes complementary Crossover Low/High choices");
     }
     else
     {
@@ -480,6 +489,7 @@ int main()
 
     {
         SmartDuckingAudioProcessor presetProcessor;
+        setParameter (presetProcessor, smart_ducking::parameter_ids::globalBypass, 1.0f);
         expect (presetProcessor.getNumPrograms() == 4,
                 "four factory programs are exposed to the host");
         expect (presetProcessor.getProgramName (0) == "Default"
@@ -496,8 +506,12 @@ int main()
                     && approximatelyEqual (
                         *presetProcessor.getParameterState().getRawParameterValue (
                             smart_ducking::parameter_ids::releaseMs),
-                        320.0f),
-                "Gentle Dialogue factory program applies its documented values");
+                        320.0f)
+                    && approximatelyEqual (
+                        *presetProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::globalBypass),
+                        1.0f),
+                "factory programs apply documented values without changing global bypass");
         presetProcessor.setCurrentProgram (3);
         expect (approximatelyEqual (
                     *presetProcessor.getParameterState().getRawParameterValue (
@@ -512,6 +526,7 @@ int main()
 
     {
         SmartDuckingAudioProcessor comparisonProcessor;
+        setParameter (comparisonProcessor, smart_ducking::parameter_ids::globalBypass, 1.0f);
         setParameter (comparisonProcessor, smart_ducking::parameter_ids::duckDepthDb, 6.0f);
         comparisonProcessor.switchComparisonSlot (1);
         expect (comparisonProcessor.getComparisonSlot() == 1
@@ -531,8 +546,12 @@ int main()
         expect (approximatelyEqual (
                     *comparisonProcessor.getParameterState().getRawParameterValue (
                         smart_ducking::parameter_ids::duckDepthDb),
-                    12.0f),
-                "A/B comparison recalls B");
+                    12.0f)
+                    && approximatelyEqual (
+                        *comparisonProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::globalBypass),
+                        1.0f),
+                "A/B comparison recalls B without changing global bypass");
 
         juce::MemoryBlock comparisonState;
         comparisonProcessor.getStateInformation (comparisonState);
@@ -571,6 +590,15 @@ int main()
         expect (wetResult.leftRatio < 0.55 && bypassedResult.leftRatio > 0.95,
                 "Wideband Bypass disables broadband attenuation");
 
+        SmartDuckingAudioProcessor globallyBypassed;
+        configureWideband (globallyBypassed);
+        setParameter (globallyBypassed, smart_ducking::parameter_ids::globalBypass, 1.0f);
+        const auto globallyBypassedResult = processTone (
+            globallyBypassed, 1000.0, 1.0f, 1.0f);
+        expect (globallyBypassedResult.leftRatio > 0.95
+                    && globallyBypassedResult.rightRatio > 0.95,
+                "global bypass returns the latency-aligned dry Main signal");
+
         SmartDuckingAudioProcessor solo;
         configureWideband (solo);
         setParameter (solo, smart_ducking::parameter_ids::widebandBypass, 1.0f);
@@ -587,6 +615,55 @@ int main()
         const auto deltaResult = processTone (delta, 1000.0, 1.0f, 1.0f);
         expect (deltaResult.leftRatio > 0.35 && deltaResult.leftRatio < 0.9,
                 "Wideband Delta returns the signal removed by the wideband stage");
+
+        constexpr int bypassBlockSize = 64;
+        SmartDuckingAudioProcessor smoothGlobalBypass;
+        configureWideband (smoothGlobalBypass);
+        smoothGlobalBypass.prepareToPlay (48000.0, bypassBlockSize);
+        juce::AudioBuffer<float> bypassBuffer (8, bypassBlockSize);
+        juce::MidiBuffer bypassMidi;
+        auto previousOutput = 0.0f;
+
+        for (int block = 0; block < 200; ++block)
+        {
+            bypassBuffer.clear();
+            for (int sample = 0; sample < bypassBlockSize; ++sample)
+            {
+                bypassBuffer.setSample (0, sample, 0.25f);
+                bypassBuffer.setSample (1, sample, 0.25f);
+                bypassBuffer.setSample (2, sample, 1.0f);
+                bypassBuffer.setSample (3, sample, 1.0f);
+            }
+
+            smoothGlobalBypass.processBlock (bypassBuffer, bypassMidi);
+            previousOutput = bypassBuffer.getSample (0, bypassBlockSize - 1);
+        }
+
+        setParameter (smoothGlobalBypass, smart_ducking::parameter_ids::globalBypass, 1.0f);
+        auto maximumBypassStep = 0.0f;
+        for (int block = 0; block < 32; ++block)
+        {
+            bypassBuffer.clear();
+            for (int sample = 0; sample < bypassBlockSize; ++sample)
+            {
+                bypassBuffer.setSample (0, sample, 0.25f);
+                bypassBuffer.setSample (1, sample, 0.25f);
+                bypassBuffer.setSample (2, sample, 1.0f);
+                bypassBuffer.setSample (3, sample, 1.0f);
+            }
+
+            smoothGlobalBypass.processBlock (bypassBuffer, bypassMidi);
+            for (int sample = 0; sample < bypassBlockSize; ++sample)
+            {
+                const auto currentOutput = bypassBuffer.getSample (0, sample);
+                maximumBypassStep = juce::jmax (maximumBypassStep,
+                                                std::abs (currentOutput - previousOutput));
+                previousOutput = currentOutput;
+            }
+        }
+
+        expect (maximumBypassStep < 0.01f && previousOutput > 0.249f,
+                "global bypass crossfades to the dry path without a discontinuity");
     }
 
     {
@@ -612,14 +689,14 @@ int main()
         expect (protectedResult.leftRatio > 0.9 && bypassedResult.leftRatio < 0.55,
                 "Crossover Bypass disables low-band protection");
 
-        SmartDuckingAudioProcessor crossoverSolo;
-        configureLowProtection (crossoverSolo);
-        setParameter (crossoverSolo,
+        SmartDuckingAudioProcessor crossoverHigh;
+        configureLowProtection (crossoverHigh);
+        setParameter (crossoverHigh,
                       smart_ducking::parameter_ids::monitorMode,
-                      static_cast<float> (smart_ducking::MonitorMode::crossoverSolo));
-        const auto soloResult = processTone (crossoverSolo, 1000.0, 1.0f, 1.0f);
-        expect (soloResult.leftRatio > 0.95,
-                "Crossover Solo bypasses Wideband and Spectral while retaining alignment");
+                      static_cast<float> (smart_ducking::MonitorMode::crossoverHigh));
+        const auto highResult = processTone (crossoverHigh, 1000.0, 1.0f, 1.0f);
+        expect (highResult.leftRatio > 0.95,
+                "Crossover High bypasses Wideband and Spectral while retaining alignment");
     }
 
     {
@@ -663,43 +740,56 @@ int main()
         SmartDuckingAudioProcessor lowMonitor;
         setParameter (lowMonitor, smart_ducking::parameter_ids::processingMode, processingMode);
         setParameter (lowMonitor, smart_ducking::parameter_ids::monitorMode,
-                      static_cast<float> (smart_ducking::MonitorMode::crossoverDelta));
+                      static_cast<float> (smart_ducking::MonitorMode::crossoverLow));
         setParameter (lowMonitor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
         setParameter (lowMonitor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
-        const auto low = processTone (lowMonitor, 40.0, 0.0f, 0.0f);
+        const auto lowPass = processTone (lowMonitor, 40.0, 0.0f, 0.0f);
+        const auto lowReject = processTone (lowMonitor, 1000.0, 0.0f, 0.0f);
 
         SmartDuckingAudioProcessor highMonitor;
         setParameter (highMonitor, smart_ducking::parameter_ids::processingMode, processingMode);
         setParameter (highMonitor, smart_ducking::parameter_ids::monitorMode,
-                      static_cast<float> (smart_ducking::MonitorMode::crossoverDelta));
+                      static_cast<float> (smart_ducking::MonitorMode::crossoverHigh));
         setParameter (highMonitor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
         setParameter (highMonitor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
-        const auto high = processTone (highMonitor, 1000.0, 0.0f, 0.0f);
-        expect (low.leftRatio > 0.9 && high.leftRatio < 0.05,
+        const auto highReject = processTone (highMonitor, 40.0, 0.0f, 0.0f);
+        const auto highPass = processTone (highMonitor, 1000.0, 0.0f, 0.0f);
+        expect (lowPass.leftRatio > 0.9 && lowReject.leftRatio < 0.05,
                 processingMode < 0.5f
-                    ? "QUALITY Crossover Delta monitors only the protected low band"
-                    : "NORMAL Crossover Delta monitors the complementary FFT low band");
+                    ? "QUALITY Crossover Low monitors only the protected low band"
+                    : "NORMAL Crossover Low monitors the complementary FFT low band");
+        expect (highReject.leftRatio < 0.05 && highPass.leftRatio > 0.9,
+                processingMode < 0.5f
+                    ? "QUALITY Crossover High monitors only the processed high band"
+                    : "NORMAL Crossover High monitors the complementary FFT high band");
         expect (lowMonitor.getLatencySamples() == highMonitor.getLatencySamples(),
                 "monitoring does not change PDC");
     }
 
     {
-        SmartDuckingAudioProcessor crossoverDeltaSurround (
-            smart_ducking::PluginVariant::surround);
-        setParameter (crossoverDeltaSurround,
-                      smart_ducking::parameter_ids::monitorMode,
-                      static_cast<float> (smart_ducking::MonitorMode::crossoverDelta));
-        setParameter (crossoverDeltaSurround, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
-        setParameter (crossoverDeltaSurround,
-                      smart_ducking::parameter_ids::spectralAmountDb,
-                      0.0f);
-        const auto lfeOnly = processSpatialTone (crossoverDeltaSurround,
-                                                 { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f },
-                                                 {},
-                                                 40.0);
-        expect (*std::max_element (lfeOnly.outputRatios.begin(),
-                                   lfeOnly.outputRatios.end()) < 0.001,
-                "Crossover Delta excludes LFE from the monitor output");
+        for (const auto monitorMode : { smart_ducking::MonitorMode::crossoverLow,
+                                        smart_ducking::MonitorMode::crossoverHigh })
+        {
+            SmartDuckingAudioProcessor crossoverMonitorSurround (
+                smart_ducking::PluginVariant::surround);
+            setParameter (crossoverMonitorSurround,
+                          smart_ducking::parameter_ids::monitorMode,
+                          static_cast<float> (monitorMode));
+            setParameter (crossoverMonitorSurround,
+                          smart_ducking::parameter_ids::duckDepthDb,
+                          0.0f);
+            setParameter (crossoverMonitorSurround,
+                          smart_ducking::parameter_ids::spectralAmountDb,
+                          0.0f);
+            const auto lfeOnly = processSpatialTone (
+                crossoverMonitorSurround,
+                { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f },
+                {},
+                40.0);
+            expect (*std::max_element (lfeOnly.outputRatios.begin(),
+                                       lfeOnly.outputRatios.end()) < 0.001,
+                    "Crossover Low and High exclude LFE from monitor output");
+        }
     }
     {
         const auto zeroLookaheadImpulse = processImpulseWithLookahead (0.0f);
@@ -708,12 +798,17 @@ int main()
         const auto fortyFourOneImpulse = processImpulseWithLookahead (10.0f, 44100.0);
         const auto eightyEightTwoImpulse = processImpulseWithLookahead (10.0f, 88200.0);
         const auto ninetySixImpulse = processImpulseWithLookahead (10.0f, 96000.0);
+        const auto bypassImpulse = processImpulseWithLookahead (10.0f, 48000.0, true);
         constexpr int expectedLatency = 2048 + 2400;
 
         expect (zeroLookaheadImpulse.latency == expectedLatency
                     && defaultLookaheadImpulse.latency == expectedLatency
                     && maximumLookaheadImpulse.latency == expectedLatency,
                 "Lookahead uses a fixed 50 ms PDC reserve at 48 kHz");
+        expect (bypassImpulse.latency == expectedLatency
+                    && bypassImpulse.maximumBeforeLatency < 1.0e-6f
+                    && approximatelyEqual (bypassImpulse.sampleAtLatency, 1.0f, 1.0e-6f),
+                "global bypass preserves the exact reported-latency impulse path");
         expect (fortyFourOneImpulse.latency == 2048 + 2205
                     && eightyEightTwoImpulse.latency == 4096 + 4410
                     && ninetySixImpulse.latency == 4096 + 4800,
@@ -864,6 +959,21 @@ int main()
         const auto droppedLfe = processSpatialTone (downmixProcessor, { 0, 0, 0, 1, 0, 0 });
         expect (droppedLfe.outputRatios[0] < 0.004 && droppedLfe.outputRatios[1] < 0.004,
                 "Drop LFE removes LFE from forced stereo downmix");
+
+        SmartDuckingAudioProcessor globallyBypassedRouting (
+            smart_ducking::PluginVariant::surround);
+        setParameter (globallyBypassedRouting, smart_ducking::parameter_ids::vlcMode, 1.0f);
+        setParameter (globallyBypassedRouting, smart_ducking::parameter_ids::downmix, 1.0f);
+        setParameter (globallyBypassedRouting, smart_ducking::parameter_ids::dropLfe, 1.0f);
+        setParameter (globallyBypassedRouting,
+                      smart_ducking::parameter_ids::globalBypass,
+                      1.0f);
+        const auto rawLfe = processSpatialTone (
+            globallyBypassedRouting, { 0, 0, 0, 1, 0, 0 });
+        expect (approximatelyEqual (static_cast<float> (rawLfe.outputRatios[3]), 1.0f, 0.004f)
+                    && rawLfe.outputRatios[0] < 0.004
+                    && rawLfe.outputRatios[1] < 0.004,
+                "global bypass also bypasses VLC remapping, downmix, and Drop LFE");
     }
 
     {
@@ -1865,6 +1975,24 @@ int main()
             return find (root);
         };
 
+        const auto findComponentWithId = [] (juce::Component& root,
+                                             const juce::String& id) -> juce::Component*
+        {
+            std::function<juce::Component* (juce::Component&)> find;
+            find = [&] (juce::Component& component) -> juce::Component*
+            {
+                if (component.getComponentID() == id)
+                    return &component;
+
+                for (int child = 0; child < component.getNumChildComponents(); ++child)
+                    if (auto* result = find (*component.getChildComponent (child)))
+                        return result;
+
+                return nullptr;
+            };
+            return find (root);
+        };
+
         const auto activate = [&] (const char* buttonText)
         {
             auto* button = findTextButton (*editor, buttonText);
@@ -1887,6 +2015,16 @@ int main()
                     && findTextButton (*editor, "ADVANCED") == nullptr
                     && findTextButton (*editor, "SPECTRUM") == nullptr,
                 "obsolete Simple/Advanced and Spectrum navigation is absent");
+        const auto* globalBypassButton = dynamic_cast<juce::TextButton*> (
+            findComponentWithId (*editor, "globalBypassButton"));
+        expect (globalBypassButton != nullptr
+                    && globalBypassButton->getClickingTogglesState()
+                    && ! globalBypassButton->getBounds().isEmpty(),
+                "header exposes the icon-only global bypass beside activity status");
+        expect (findTextButton (*editor, "LOW") != nullptr
+                    && findTextButton (*editor, "HIGH") != nullptr
+                    && findComponentWithId (*editor, "stageBypassButton0") != nullptr,
+                "Crossover strip exposes icon bypass plus LOW and HIGH monitors");
 
         activate ("ROUTING");
         visible = inspectVisibleControls (*editor);
@@ -1977,6 +2115,7 @@ int main()
     constexpr float savedWeightFrequency = 4200.0f;
     setParameter (processor, smart_ducking::parameter_ids::weightFrequencyHz, savedWeightFrequency);
     setParameter (processor, smart_ducking::parameter_ids::widebandBypass, 1.0f);
+    setParameter (processor, smart_ducking::parameter_ids::globalBypass, 1.0f);
     setParameter (processor,
                   smart_ducking::parameter_ids::monitorMode,
                   static_cast<float> (smart_ducking::MonitorMode::spectralDelta));
@@ -1998,8 +2137,12 @@ int main()
                 && approximatelyEqual (
                     *restoredProcessor.getParameterState().getRawParameterValue (
                         smart_ducking::parameter_ids::monitorMode),
-                    static_cast<float> (smart_ducking::MonitorMode::spectralDelta)),
-            "stage bypass and Monitor Mode survive state round-trip");
+                    static_cast<float> (smart_ducking::MonitorMode::spectralDelta))
+                && approximatelyEqual (
+                    *restoredProcessor.getParameterState().getRawParameterValue (
+                        smart_ducking::parameter_ids::globalBypass),
+                    1.0f),
+            "global/stage bypass and Monitor Mode survive state round-trip");
     expect (static_cast<int> (restoredProcessor.getParameterState().state.getProperty (
                 "uiPage", -1)) == 1
                 && ! restoredProcessor.getParameterState().state.hasProperty ("uiEditorMode")

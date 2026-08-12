@@ -76,14 +76,15 @@ private:
     std::array<juce::TextButton, 2> comparisonButtons {
         juce::TextButton { "A" }, juce::TextButton { "B" }
     };
+    juce::TextButton globalBypassButton;
     juce::Component stageControlPanel;
     std::array<juce::Label, 3> stageLabels;
     std::array<juce::TextButton, 9> stageButtons {
-        juce::TextButton { "B" }, juce::TextButton { "S" },
+        juce::TextButton {}, juce::TextButton { "LOW" },
+        juce::TextButton { "HIGH" },
+        juce::TextButton {}, juce::TextButton { "S" },
         juce::TextButton { juce::String::charToString (0x0394) },
-        juce::TextButton { "B" }, juce::TextButton { "S" },
-        juce::TextButton { juce::String::charToString (0x0394) },
-        juce::TextButton { "B" }, juce::TextButton { "S" },
+        juce::TextButton {}, juce::TextButton { "S" },
         juce::TextButton { juce::String::charToString (0x0394) }
     };
 
@@ -121,6 +122,7 @@ private:
     std::unique_ptr<ComboBoxAttachment> voiceFormatAttachment;
     std::unique_ptr<ButtonAttachment> downmixAttachment;
     std::unique_ptr<ButtonAttachment> dropLfeAttachment;
+    std::unique_ptr<ButtonAttachment> globalBypassAttachment;
     std::array<std::unique_ptr<ButtonAttachment>, 3> stageBypassAttachments;
 
     std::array<float, 5> displayedMainPeaks {};

@@ -1,6 +1,6 @@
 # Smart Ducking 1.0 — validation record
 
-Дата: 12 августа 2026 года.
+Дата: 13 августа 2026 года.
 
 ## Сборка
 
@@ -14,8 +14,8 @@
 
 Debug arm64 и Universal Release собраны полностью. В обеих конфигурациях проходят:
 
-- `SmartDucking.Processor` — DSP, state, editor, routing, monitor modes, PDC, presets/A-B, extracted smoothers/PCE history, random/boundary block sizes, finite output и realtime/offline-style numerical equivalence;
-- `SmartDucking.VST3Factory` — загрузка готового binary, два различных class ID, имена/версия/категория, layouts `2 + 6 + 2` и `6 + 6 + 6`, processing, state, default latency и finite tail 96 000 samples при 48 kHz.
+- `SmartDucking.Processor` — DSP, state, editor, routing, monitor modes, Global Bypass, PDC, presets/A-B, extracted smoothers/PCE history, random/boundary block sizes, finite output и realtime/offline-style numerical equivalence;
+- `SmartDucking.VST3Factory` — загрузка готового binary, два различных class ID, имена/версия/категория, layouts `2 + 6 + 2` и `6 + 6 + 6`, ровно один параметр с VST3-флагом `kIsBypass`, processing, state, default latency и finite tail 96 000 samples при 48 kHz.
 
 Точная PDC автоматически проверяется при 44.1, 48, 88.2 и 96 kHz. Тест 88.2 kHz добавлен в Stage D.
 
@@ -27,7 +27,7 @@ Debug arm64 и Universal Release собраны полностью. В обеи�
 --strictness-level 5 --validate-in-process
 ```
 
-Результат: `SUCCESS`, найдены и прошли оба класса. Для Stereo и Surround проверены program list, editor, state, automation, bus negotiation и processing при 44.1/48/96 kHz с block sizes 64–1024. Внутренний optional VST3 SDK validator pluginval не запускался, так как отдельный validator executable не был задан; это не повлияло на успешный итог pluginval.
+Результат после добавления Global Bypass и Crossover LOW/HIGH: `SUCCESS`, найдены и прошли оба класса. Для Stereo и Surround проверены program list, editor, state, automation, bus negotiation и processing при 44.1/48/96 kHz с block sizes 64–1024. Внутренний optional VST3 SDK validator pluginval не запускался, так как отдельный validator executable не был задан; это не повлияло на успешный итог pluginval.
 
 ## CPU benchmark
 

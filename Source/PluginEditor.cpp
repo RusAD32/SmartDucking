@@ -27,6 +27,7 @@ const auto maskColour = juce::Colour::fromRGB (251, 191, 36);
 const auto spectralReductionColour = maskColour;
 const auto borderColour = juce::Colours::white.withAlpha (0.10f);
 const auto cardColour = juce::Colours::white.withAlpha (0.045f);
+const juce::Identifier bypassIconProperty { "bypassIcon" };
 
 float decaySignalPeak (float displayed, float current) noexcept
 {
@@ -65,6 +66,40 @@ void drawCard (juce::Graphics& graphics, juce::Rectangle<float> bounds, float co
     graphics.fillRoundedRectangle (bounds, corner);
     graphics.setColour (borderColour);
     graphics.drawRoundedRectangle (bounds.reduced (0.5f), corner, 1.0f);
+}
+
+void drawBypassIcon (juce::Graphics& graphics,
+                     juce::Rectangle<float> bounds,
+                     juce::Colour colour)
+{
+    const auto size = juce::jmin (18.0f, juce::jmin (bounds.getWidth(), bounds.getHeight()));
+    bounds = bounds.withSizeKeepingCentre (size, size * 0.72f);
+    const auto left = bounds.getX();
+    const auto right = bounds.getRight();
+    const auto centreY = bounds.getCentreY();
+    const auto splitX = left + bounds.getWidth() * 0.27f;
+    const auto mergeX = left + bounds.getWidth() * 0.73f;
+    const auto upperY = bounds.getY() + 1.0f;
+    const auto lowerY = bounds.getBottom() - 1.0f;
+
+    juce::Path signal;
+    signal.startNewSubPath (left, centreY);
+    signal.lineTo (splitX, centreY);
+    signal.cubicTo (splitX + 1.5f, upperY,
+                    mergeX - 1.5f, upperY,
+                    mergeX, centreY);
+    signal.lineTo (right, centreY);
+    signal.startNewSubPath (splitX, centreY);
+    signal.cubicTo (splitX + 1.5f, lowerY,
+                    mergeX - 1.5f, lowerY,
+                    mergeX, centreY);
+
+    graphics.setColour (colour);
+    graphics.strokePath (signal, juce::PathStrokeType (1.8f,
+                                                        juce::PathStrokeType::curved,
+                                                        juce::PathStrokeType::rounded));
+    graphics.fillEllipse (juce::Rectangle<float> (3.4f, 3.4f).withCentre ({ splitX, centreY }));
+    graphics.fillEllipse (juce::Rectangle<float> (3.4f, 3.4f).withCentre ({ mergeX, centreY }));
 }
 
 juce::String frequencyText (float frequency)
@@ -262,8 +297,16 @@ struct SmartDuckingAudioProcessorEditor::OnWaveLookAndFeel final : juce::LookAnd
                          bool,
                          bool) override
     {
+        const auto colour = button.getToggleState() ? textColour : secondaryTextColour;
+        if (static_cast<bool> (button.getProperties().getWithDefault (
+                bypassIconProperty, false)))
+        {
+            drawBypassIcon (graphics, button.getLocalBounds().toFloat(), colour);
+            return;
+        }
+
         graphics.setFont (juce::FontOptions { 12.0f, juce::Font::bold });
-        graphics.setColour (button.getToggleState() ? textColour : secondaryTextColour);
+        graphics.setColour (colour);
         graphics.drawFittedText (button.getButtonText(),
                                  button.getLocalBounds().reduced (8, 2),
                                  juce::Justification::centred,
@@ -1770,6 +1813,15 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     setResizeLimits (820, 560, 1400, 900);
     setSize (editorWidth, editorHeight);
 
+    addAndMakeVisible (globalBypassButton);
+    globalBypassButton.getProperties().set (bypassIconProperty, true);
+    globalBypassButton.setComponentID ("globalBypassButton");
+    globalBypassButton.setClickingTogglesState (true);
+    globalBypassButton.setTooltip (
+        "Bypass the complete plugin through a latency-aligned dry path.");
+    globalBypassAttachment = std::make_unique<ButtonAttachment> (
+        audioProcessor.getParameterState(), globalBypass, globalBypassButton);
+
     addAndMakeVisible (stageControlPanel);
 
     for (size_t slot = 0; slot < comparisonButtons.size(); ++slot)
@@ -1793,13 +1845,13 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     const std::array<const char*, 3> bypassParameterIds {
         crossoverBypass, widebandBypass, spectralBypass
     };
-    const std::array<smart_ducking::MonitorMode, 3> soloModes {
-        smart_ducking::MonitorMode::crossoverSolo,
+    const std::array<smart_ducking::MonitorMode, 3> firstMonitorModes {
+        smart_ducking::MonitorMode::crossoverLow,
         smart_ducking::MonitorMode::widebandSolo,
         smart_ducking::MonitorMode::spectralSolo
     };
-    const std::array<smart_ducking::MonitorMode, 3> deltaModes {
-        smart_ducking::MonitorMode::crossoverDelta,
+    const std::array<smart_ducking::MonitorMode, 3> secondMonitorModes {
+        smart_ducking::MonitorMode::crossoverHigh,
         smart_ducking::MonitorMode::widebandDelta,
         smart_ducking::MonitorMode::spectralDelta
     };
@@ -1818,24 +1870,31 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
         {
             auto& button = stageButtons[stage * 3 + control];
             stageControlPanel.addAndMakeVisible (button);
+            if (control == 0)
+            {
+                button.getProperties().set (bypassIconProperty, true);
+                button.setComponentID ("stageBypassButton" + juce::String (stage));
+            }
             button.setTooltip (control == 0
                 ? "Bypass this stage independently."
-                : control == 1
-                    ? "Solo this stage while bypassing the other two."
+                : stage == 0 && control == 1
+                    ? "Monitor only the protected low band without LFE."
                     : stage == 0
-                        ? "Monitor the protected low band without LFE."
-                        : "Monitor only the signal removed by this stage.");
+                        ? "Monitor only the processed high band without LFE."
+                        : control == 1
+                    ? "Solo this stage while bypassing the other two."
+                    : "Monitor only the signal removed by this stage.");
         }
 
         auto& bypass = stageButtons[stage * 3];
         bypass.setClickingTogglesState (true);
         stageBypassAttachments[stage] = std::make_unique<ButtonAttachment> (
             audioProcessor.getParameterState(), bypassParameterIds[stage], bypass);
-        stageButtons[stage * 3 + 1].onClick = [this, mode = soloModes[stage]]
+        stageButtons[stage * 3 + 1].onClick = [this, mode = firstMonitorModes[stage]]
         {
             setMonitorMode (mode);
         };
-        stageButtons[stage * 3 + 2].onClick = [this, mode = deltaModes[stage]]
+        stageButtons[stage * 3 + 2].onClick = [this, mode = secondMonitorModes[stage]]
         {
             setMonitorMode (mode);
         };
@@ -2218,6 +2277,8 @@ void SmartDuckingAudioProcessorEditor::resized()
                                                                                       12.0f);
     activityStatusBounds = lampArea.toFloat();
     header.removeFromRight (6);
+    globalBypassButton.setBounds (header.removeFromRight (36).withSizeKeepingCentre (34, 32));
+    header.removeFromRight (8);
 
     const auto placeHeaderControl = [&header] (juce::Component& component,
                                                 int width,
@@ -2433,22 +2494,22 @@ void SmartDuckingAudioProcessorEditor::updateStageButtons()
         smart_ducking::parameter_ids::monitorMode);
     const auto mode = static_cast<smart_ducking::MonitorMode> (juce::jlimit (
         0, 6, monitor != nullptr ? juce::roundToInt (monitor->load()) : 0));
-    const std::array<smart_ducking::MonitorMode, 3> soloModes {
-        smart_ducking::MonitorMode::crossoverSolo,
+    const std::array<smart_ducking::MonitorMode, 3> firstMonitorModes {
+        smart_ducking::MonitorMode::crossoverLow,
         smart_ducking::MonitorMode::widebandSolo,
         smart_ducking::MonitorMode::spectralSolo
     };
-    const std::array<smart_ducking::MonitorMode, 3> deltaModes {
-        smart_ducking::MonitorMode::crossoverDelta,
+    const std::array<smart_ducking::MonitorMode, 3> secondMonitorModes {
+        smart_ducking::MonitorMode::crossoverHigh,
         smart_ducking::MonitorMode::widebandDelta,
         smart_ducking::MonitorMode::spectralDelta
     };
 
     for (size_t stage = 0; stage < stageLabels.size(); ++stage)
     {
-        stageButtons[stage * 3 + 1].setToggleState (mode == soloModes[stage],
+        stageButtons[stage * 3 + 1].setToggleState (mode == firstMonitorModes[stage],
                                                     juce::dontSendNotification);
-        stageButtons[stage * 3 + 2].setToggleState (mode == deltaModes[stage],
+        stageButtons[stage * 3 + 2].setToggleState (mode == secondMonitorModes[stage],
                                                     juce::dontSendNotification);
     }
 }

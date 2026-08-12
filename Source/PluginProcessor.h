@@ -19,8 +19,8 @@ namespace smart_ducking
 enum class MonitorMode
 {
     normal = 0,
-    crossoverSolo,
-    crossoverDelta,
+    crossoverLow,
+    crossoverHigh,
     widebandSolo,
     widebandDelta,
     spectralSolo,
@@ -42,6 +42,10 @@ public:
     void prepareToPlay (double sampleRate, int maximumExpectedSamplesPerBlock) override;
     void releaseResources() override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    [[nodiscard]] juce::AudioProcessorParameter* getBypassParameter() const override
+    {
+        return globalBypassHostParameter;
+    }
 
     [[nodiscard]] bool isBusesLayoutSupported (const BusesLayout&) const override;
 
@@ -336,6 +340,8 @@ private:
     void captureComparisonSlot (int);
     void restoreComparisonSlot (int);
     void initialiseComparisonSlots();
+    [[nodiscard]] bool isGlobalBypassParameter (
+        const juce::AudioProcessorParameter*) const noexcept;
 
     const smart_ducking::PluginVariant variant;
     juce::AudioProcessorValueTreeState parameters;
@@ -358,6 +364,8 @@ private:
     std::atomic<float>* vlcModeParameter = nullptr;
     std::atomic<float>* downmixParameter = nullptr;
     std::atomic<float>* dropLfeParameter = nullptr;
+    std::atomic<float>* globalBypassParameter = nullptr;
+    juce::AudioProcessorParameter* globalBypassHostParameter = nullptr;
     std::atomic<float>* crossoverBypassParameter = nullptr;
     std::atomic<float>* widebandBypassParameter = nullptr;
     std::atomic<float>* spectralBypassParameter = nullptr;
@@ -374,6 +382,8 @@ private:
         mainLookaheadDelay;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
         dryMonitorDelay;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
+        globalBypassDelay;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear>
         sidechainLookaheadDelay;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
@@ -383,9 +393,13 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
         smoothedDeltaMonitorMix;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
-        smoothedQualityCrossoverDeltaMix;
+        smoothedQualityCrossoverLowMix;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
-        smoothedCrossoverDeltaLfeMute;
+        smoothedQualityCrossoverHighMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedCrossoverMonitorLfeMute;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smoothedGlobalBypassMix;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
         smoothedVoiceSurroundMix;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>

@@ -104,7 +104,9 @@ Every STFT frame advances the same WOLA state and therefore keeps PDC and audibl
 
 ## Stage routing and monitoring
 
-Three boolean host parameters bypass Crossover, Wideband, and Spectral independently. One choice parameter represents the mutually exclusive Normal/Crossover/Wideband/Spectral Solo and Delta modes. Solo enables only the selected stage. Wideband and Spectral Delta subtract the selected wet result from an STFT-aligned dry Main path. Crossover Delta uses the delayed LR8 low branch in QUALITY and the complementary FFT-domain low curve in NORMAL; LFE is faded out of this monitor path. Stage and monitor gains use 30 ms ramps, while all paths retain the configured STFT plus Lookahead-reserve latency.
+Three boolean host parameters bypass Crossover, Wideband, and Spectral independently. One choice parameter represents mutually exclusive Crossover Low/High, Wideband Solo/Delta, and Spectral Solo/Delta monitoring. Crossover Low/High use the delayed complementary LR8 branches in QUALITY and complementary FFT-domain curves in NORMAL; both omit LFE. Wideband and Spectral Delta subtract the selected wet result from an STFT-aligned dry Main path. Stage and monitor gains use 30 ms ramps, while all paths retain the configured STFT plus Lookahead-reserve latency.
+
+A separate boolean is returned through JUCE's `getBypassParameter()` as the standard VST3 bypass control. It uses a 30 ms crossfade to the raw Main input delayed by the fixed Lookahead reserve and current STFT latency. This path intentionally bypasses VLC remapping, downmix, Drop LFE, all processing stages, and monitor modes while preserving the declared PDC. The wet engine continues advancing so bypass can be left without stale state. Global bypass is stored in project state but is excluded from factory-program and A/B snapshot recall.
 
 The spectral engine publishes its real heavy-path state through a lock-free atomic. It remains ACTIVE through detector hold, release, mask decay, and overlap-add tail, and becomes SLEEP only when the existing dry WOLA fast path is actually selected. GUI polling does not wake the engine.
 
@@ -125,10 +127,10 @@ restores all parameter defaults and then applies the preset overrides, so no
 values leak from the previously selected program.
 
 The editor header has two comparison slots. Switching slots captures the current
-normalised value of every host parameter and restores the other snapshot. Both
+normalised value of every processing/routing parameter and restores the other snapshot. Both
 snapshots, the active slot, the current factory-program index, and the ordinary
 APVTS/UI state are serialized in the project state. Snapshot storage is allocated
-outside `processBlock`.
+outside `processBlock`; global bypass remains independent of comparison recall.
 
 ## Validation and realtime boundary
 

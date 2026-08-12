@@ -423,8 +423,8 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 | Spectral Amount | 0–18 dB | 10 dB | предварительный default |
 | Spectral Low | 100–2000 Hz | 150 Hz | зафиксировано |
 | Spectral High | 4–20 kHz | 20 kHz | зафиксировано |
-| Weight Frequency | 500 Hz–8 kHz | 3 kHz | зафиксировано |
-| Weight Gain | 0–12 dB | 6 dB | предварительный default |
+| Weight Frequency | 500 Hz–20 kHz | 3 kHz | зафиксировано |
+| Weight Gain | −12…+12 dB | +6 dB | зафиксировано |
 | Weight Q | 0.3–3.0 | 0.8 | предварительный default |
 | Matrix cells | 0–100% | см. матрицы | зафиксировано |
 | FFT Resolution | ×1 / ×2 / ×4 | ×2 | зафиксировано |
@@ -433,8 +433,9 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 | VLC Channel Order | Off / On | Off | только Surround Main |
 | Downmix | Off / On | Off | только Surround output |
 | Drop LFE | Off / On | Off | действует при Downmix |
+| Global Bypass | Off / On | Off | стандартный VST3 bypass, хранится в project state |
 | Crossover/Wideband/Spectral Bypass | Off / On | Off | три независимых host-параметра |
-| Monitor Mode | Normal / Solo / Delta для трёх стадий | Normal | взаимо исключающий choice |
+| Monitor Mode | Normal / Crossover Low/High / Solo/Delta для Wideband и Spectral | Normal | взаимо исключающий choice |
 
 Параметры, влияющие на gain или коэффициенты фильтров, должны сглаживаться и не создавать zipper noise.
 
@@ -446,7 +447,7 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 - Детерминированное поведение при realtime playback и offline render.
 - Все внутренние буферы выделяются при prepare/reset или при безопасном изменении конфигурации.
 - При смене sample rate, FFT Resolution или channel layout состояния корректно пересоздаются.
-- При bypass отдельных DSP-стадий сохраняется заявленная задержка и временное выравнивание.
+- При bypass отдельных DSP-стадий и Global Bypass сохраняются заявленная задержка и временное выравнивание.
 - Использование SIMD и иных оптимизаций рассматривается после профилирования, а не вместо него.
 
 ## 14. Проверка и критерии приёмки DSP-прототипа
@@ -492,13 +493,13 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 
 ## 15. Диагностические функции
 
-Текущий resizable editor постоянно отображает Main/Voice/Output meters и независимые wideband/spectral gain-reduction meters. Simple содержит Ducking Depth, Spectral Depth, Threshold, Attack, Hold и Release. Crossover, Spectral Low и Spectral High редактируются маркерами анализатора. Advanced разделён на Dynamics, Spectrum и Routing; Lookahead находится в Advanced/Dynamics, а FFT Resolution и `QUALITY / NORMAL` — в Advanced/Spectrum. Matrix использует линейные процентные слайдеры, общие заголовки строк/столбцов и динамические размеры 3×3, 3×5, 5×3 или 5×5.
+Текущий resizable editor постоянно отображает Main/Voice/Output meters и независимые wideband/spectral gain-reduction meters. Две прямые страницы `DYNAMICS` и `ROUTING` заменяют старую иерархию Simple/Advanced/Spectrum. Crossover, Spectral Low и Spectral High редактируются маркерами анализатора; Dynamics также содержит Lookahead, FFT Resolution и `QUALITY / NORMAL`. Matrix использует линейные процентные слайдеры, общие заголовки строк/столбцов и динамические размеры 3×3, 3×5, 5×3 или 5×5.
 
 Weight Frequency/Gain/Q редактируются одной parametric node: drag меняет frequency/gain, Shift-drag или wheel меняет Q, double-click возвращает defaults. `L/R LINK` — только инструмент ручного редактирования и не зеркалит host automation.
 
-Единая группа `B / S / Δ` управляет Crossover, Wideband и Spectral. Solo/Delta взаимно исключаются через Monitor Mode; Crossover Delta возвращает только защищённый low band без LFE, Wideband/Spectral Delta — удалённый сигнал своей стадии. Header показывает фактическое состояние heavy engine `SLEEP / ACTIVE`.
+В единой группе стадий bypass обозначен векторной иконкой. Crossover предлагает `Bypass / LOW / HIGH`; обе monitor-полосы комплементарны и исключают LFE. Wideband и Spectral предлагают `Bypass / S / Δ`, причём Delta возвращает удалённый сигнал своей стадии. Monitor Mode взаимо исключает режимы прослушивания. Рядом с фактическим индикатором heavy engine `SLEEP / ACTIVE` находится отдельный Global Bypass: стандартный VST3-параметр плавно переключает на raw Main, выровненный по полной PDC, и обходит также remapping/downmix/Drop LFE.
 
-Кнопки `A / B` хранят два полных parameter snapshot в project state. Host program list содержит `Default`, `Gentle Dialogue`, `Voice Focus` и `Fast Announcer`. Simple/Advanced mode, Advanced page и matrix-link также сохраняются.
+Кнопки `A / B` хранят два parameter snapshot в project state, не меняя Global Bypass. Host program list содержит `Default`, `Gentle Dialogue`, `Voice Focus` и `Fast Announcer`. Выбранная Dynamics/Routing page и matrix-link также сохраняются.
 
 DiagnosticLogger в diagnostic build публикует lock-free counters и записывает snapshot отдельным low-priority thread раз в 1000 ms. Production build отключает файловую диагностику; audio callback не выполняет I/O и блокировки.
 

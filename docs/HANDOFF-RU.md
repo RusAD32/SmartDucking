@@ -338,7 +338,7 @@ Lookahead является активным параметром 0–50 ms. Он
 - VLC mode доступен из меню Main meter;
 - Downmix/Drop LFE видны только в Surround class.
 
-Lookahead находится в Advanced/Dynamics. Единая группа `B / S / Δ` и фактический индикатор `SLEEP / ACTIVE` реализованы в Stage B. Stage C также завершён:
+Lookahead находится в Dynamics. Единая группа стадий использует иконку bypass, `LOW / HIGH` для Crossover и `S / Δ` для Wideband/Spectral. Рядом с фактическим индикатором `SLEEP / ACTIVE` находится стандартный VST3 Global Bypass с latency-aligned dry path. Stage C также завершён:
 
 - weighting EQ редактируется одной draggable parametric node без дублирующих rotary controls;
 - `L/R LINK` пространственно отражает только ручные изменения матрицы;

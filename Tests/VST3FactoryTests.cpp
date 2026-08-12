@@ -1,6 +1,8 @@
 #include <pluginterfaces/base/ipluginbase.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivstcomponent.h>
+#include <pluginterfaces/vst/ivsteditcontroller.h>
+#include <pluginterfaces/vst/ivstmessage.h>
 
 #include <cstring>
 #include <filesystem>
@@ -208,6 +210,91 @@ bool checkComponentBuses (Steinberg::IPluginFactory& factory,
         std::cerr << expected.name << " could not be initialized\n";
         component->release();
         return false;
+    }
+
+    Steinberg::TUID controllerCid {};
+    void* controllerObject = nullptr;
+
+    if (component->getControllerClassId (controllerCid) != Steinberg::kResultOk
+        || factory.createInstance (controllerCid,
+                                   Steinberg::Vst::IEditController::iid,
+                                   &controllerObject) != Steinberg::kResultOk
+        || controllerObject == nullptr)
+    {
+        std::cerr << expected.name << " does not expose an edit controller\n";
+        ok = false;
+    }
+    else
+    {
+        auto* controller = static_cast<Steinberg::Vst::IEditController*> (controllerObject);
+
+        if (controller->initialize (nullptr) != Steinberg::kResultOk)
+        {
+            std::cerr << expected.name << " edit controller could not be initialized\n";
+            ok = false;
+        }
+        else
+        {
+            void* componentConnectionObject = nullptr;
+            void* controllerConnectionObject = nullptr;
+            const auto haveConnections = component->queryInterface (
+                    Steinberg::Vst::IConnectionPoint::iid,
+                    &componentConnectionObject) == Steinberg::kResultOk
+                && componentConnectionObject != nullptr
+                && controller->queryInterface (
+                    Steinberg::Vst::IConnectionPoint::iid,
+                    &controllerConnectionObject) == Steinberg::kResultOk
+                && controllerConnectionObject != nullptr;
+            auto* componentConnection = static_cast<Steinberg::Vst::IConnectionPoint*> (
+                componentConnectionObject);
+            auto* controllerConnection = static_cast<Steinberg::Vst::IConnectionPoint*> (
+                controllerConnectionObject);
+
+            if (! haveConnections
+                || componentConnection->connect (controllerConnection) != Steinberg::kResultOk
+                || controllerConnection->connect (componentConnection) != Steinberg::kResultOk)
+            {
+                std::cerr << expected.name << " component/controller connection failed\n";
+                ok = false;
+            }
+
+            auto bypassParameterCount = 0;
+
+            for (Steinberg::int32 parameterIndex = 0;
+                 parameterIndex < controller->getParameterCount();
+                 ++parameterIndex)
+            {
+                Steinberg::Vst::ParameterInfo parameterInfo {};
+
+                if (controller->getParameterInfo (parameterIndex, parameterInfo)
+                        == Steinberg::kResultOk
+                    && (parameterInfo.flags & Steinberg::Vst::ParameterInfo::kIsBypass) != 0)
+                    ++bypassParameterCount;
+            }
+
+            if (bypassParameterCount != 1)
+            {
+                std::cerr << expected.name << " exposes " << bypassParameterCount
+                          << " standard VST3 bypass parameters instead of one\n";
+                ok = false;
+            }
+
+            if (componentConnection != nullptr && controllerConnection != nullptr)
+            {
+                controllerConnection->disconnect (componentConnection);
+                componentConnection->disconnect (controllerConnection);
+            }
+
+            if (controllerConnection != nullptr)
+                controllerConnection->release();
+
+            if (componentConnection != nullptr)
+                componentConnection->release();
+
+            controller->terminate();
+        }
+
+        controller->release();
     }
 
     if (component->getBusCount (Steinberg::Vst::kAudio, Steinberg::Vst::kInput) != 2

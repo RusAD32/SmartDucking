@@ -54,7 +54,8 @@ public:
         float crossoverStageMix = 1.0f;
         float widebandStageMix = 1.0f;
         float spectralStageMix = 1.0f;
-        bool crossoverDelta = false;
+        bool crossoverLowMonitor = false;
+        bool crossoverHighMonitor = false;
         LcrDuckMatrix duckMatrix;
     };
 
@@ -262,7 +263,8 @@ public:
         crossoverStageSmoother.reset (parameters.crossoverStageMix);
         widebandStageSmoother.reset (parameters.widebandStageMix);
         spectralStageSmoother.reset (parameters.spectralStageMix);
-        crossoverDeltaSmoother.reset (parameters.crossoverDelta ? 1.0f : 0.0f);
+        crossoverLowMonitorSmoother.reset (parameters.crossoverLowMonitor ? 1.0f : 0.0f);
+        crossoverHighMonitorSmoother.reset (parameters.crossoverHighMonitor ? 1.0f : 0.0f);
     }
 
     void setResolutionIndex (int newResolutionIndex) noexcept
@@ -760,8 +762,12 @@ private:
             juce::jlimit (0.0f, 1.0f, parameters.spectralStageMix),
             frameDurationSeconds,
             stageTransitionSeconds);
-        const auto currentCrossoverDeltaMix = crossoverDeltaSmoother.process (
-            parameters.crossoverDelta ? 1.0f : 0.0f,
+        const auto currentCrossoverLowMix = crossoverLowMonitorSmoother.process (
+            parameters.crossoverLowMonitor ? 1.0f : 0.0f,
+            frameDurationSeconds,
+            stageTransitionSeconds);
+        const auto currentCrossoverHighMix = crossoverHighMonitorSmoother.process (
+            parameters.crossoverHighMonitor ? 1.0f : 0.0f,
             frameDurationSeconds,
             stageTransitionSeconds);
 
@@ -850,9 +856,11 @@ private:
             std::memory_order_relaxed);
 #endif
 
-        const auto crossoverDeltaNeedsFft = economyMode
-                                         && (parameters.crossoverDelta
-                                             || currentCrossoverDeltaMix > 0.0f);
+        const auto crossoverMonitorNeedsFft = economyMode
+                                           && (parameters.crossoverLowMonitor
+                                               || parameters.crossoverHighMonitor
+                                               || currentCrossoverLowMix > 0.0f
+                                               || currentCrossoverHighMix > 0.0f);
         const auto duckingStagesNeedFft = parameters.widebandStageMix > 0.0f
                                        || parameters.spectralStageMix > 0.0f
                                        || currentWidebandStageMix > 0.0f
@@ -860,8 +868,8 @@ private:
 
         if ((! sidechainSignalIsPresent && ! envelopeIsActive
              && spectralReductionIsFinished && widebandReductionIsFinished
-             && ! crossoverDeltaNeedsFft)
-            || (! duckingStagesNeedFft && ! crossoverDeltaNeedsFft))
+             && ! crossoverMonitorNeedsFft)
+            || (! duckingStagesNeedFft && ! crossoverMonitorNeedsFft))
         {
             if (shouldUpdateVisualisation)
             {
@@ -1080,13 +1088,15 @@ private:
             {
                 if (lastMaximumReductionDb[static_cast<size_t> (channel)] > 0.0f
                     || lastWidebandReductionDb[static_cast<size_t> (channel)] > 0.0f
-                    || currentCrossoverDeltaMix > 0.0f)
+                    || currentCrossoverLowMix > 0.0f
+                    || currentCrossoverHighMix > 0.0f)
                     applyEconomyCrossoverGain (
                         channel,
                         transform,
                         lastWidebandReductionDb[static_cast<size_t> (channel)],
                         currentCrossoverStageMix,
-                        currentCrossoverDeltaMix,
+                        currentCrossoverLowMix,
+                        currentCrossoverHighMix,
                         shouldUpdateVisualisation);
             }
             else if (! combineNormalSpectralAndWideGain
@@ -1285,7 +1295,8 @@ private:
                                     std::vector<float>& transform,
                                     float widebandReductionDb,
                                     float crossoverStageMix,
-                                    float crossoverDeltaMix,
+                                    float crossoverLowMix,
+                                    float crossoverHighMix,
                                     bool updateDisplayMask) noexcept
     {
         updateEconomyCrossoverCurveCache();
@@ -1294,6 +1305,12 @@ private:
             -juce::jmax (0.0f, widebandReductionDb));
         auto& spectralReduction = appliedSpectralReductionDb[static_cast<size_t> (channel)];
         auto minimumEffectiveSpectralGain = 1.0f;
+        const auto monitorMixSum = crossoverLowMix + crossoverHighMix;
+        const auto monitorMix = juce::jlimit (0.0f, 1.0f, monitorMixSum);
+        const auto lowShare = monitorMixSum > epsilon
+            ? crossoverLowMix / monitorMixSum : 0.0f;
+        const auto highShare = monitorMixSum > epsilon
+            ? crossoverHighMix / monitorMixSum : 0.0f;
 
         for (int bin = 0; bin < bins; ++bin)
         {
@@ -1305,10 +1322,11 @@ private:
                 -juce::jmax (0.0f, spectralReduction[static_cast<size_t> (bin)]));
             const auto normalGain = lowWeight
                                   + highWeight * spectralGain * widebandGain;
-            const auto crossoverDeltaGain = 1.0f - crossoverHighWeight;
+            const auto crossoverLowGain = 1.0f - crossoverHighWeight;
+            const auto monitorGain = lowShare * crossoverLowGain
+                                   + highShare * crossoverHighWeight;
             const auto combinedGain = normalGain
-                                    + crossoverDeltaMix
-                                          * (crossoverDeltaGain - normalGain);
+                                    + monitorMix * (monitorGain - normalGain);
             const auto offset = static_cast<size_t> (2 * bin);
             transform[offset] *= combinedGain;
             transform[offset + 1] *= combinedGain;
@@ -2073,7 +2091,8 @@ private:
     LinearFrameSmoother crossoverStageSmoother;
     LinearFrameSmoother widebandStageSmoother;
     LinearFrameSmoother spectralStageSmoother;
-    LinearFrameSmoother crossoverDeltaSmoother;
+    LinearFrameSmoother crossoverLowMonitorSmoother;
+    LinearFrameSmoother crossoverHighMonitorSmoother;
     bool weightingCurveDirty = true;
     bool economyMode = false;
     bool economyCrossoverCurveDirty = true;
