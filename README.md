@@ -14,8 +14,9 @@ Lookahead is adjustable from 0 to 50 ms with a 10 ms default. Main reserves the 
 - JUCE 8.0.12 (local checkout, installed CMake package, or automatic FetchContent download)
 - Windows: Visual Studio with Desktop development with C++
 - macOS: Apple Command Line Tools, CMake, and Ninja
+- Linux: GCC or Clang, Ninja, and the JUCE ALSA/Jack, FreeType, Fontconfig, LADSPA, and X11 development packages
 
-The tracked `CMakePresets.json` contains the common Windows and macOS presets. The ignored `CMakeUserPresets.json` is only for machine-local overrides such as an absolute JUCE path. Without an override, CMake uses `JUCE_PATH`, the workspace-adjacent `../../JUCE-8.0.12`, an installed JUCE package, or downloads the pinned `8.0.12` tag.
+The tracked `CMakePresets.json` contains the common Windows, macOS, and Linux presets. The ignored `CMakeUserPresets.json` is only for machine-local overrides such as an absolute JUCE path. Without an override, CMake uses `JUCE_PATH`, the workspace-adjacent `../../JUCE-8.0.12`, an installed JUCE package, or downloads the pinned `8.0.12` tag.
 
 ## Repository contents
 
@@ -45,6 +46,14 @@ cmake --build --preset macos-release-universal --target SmartDucking_All SmartDu
 ctest --preset macos-release-universal
 ```
 
+On Linux x86_64:
+
+```sh
+cmake --preset linux-release-x64
+cmake --build --preset linux-release-x64 --target SmartDucking_All SmartDuckingTests SmartDuckingVST3FactoryTests
+ctest --preset linux-release-x64
+```
+
 The factory test dynamically loads the finished VST3 and verifies both audio-module classes, their bus layouts, metadata, processing, state, latency, and distinct class IDs. `SmartDucking.Processor` covers the DSP contract, safe configuration, variable-block and realtime/offline-style equivalence, editor behaviour, presets, and A/B state.
 
 To enable the optional external pluginval target, provide a pluginval executable while configuring:
@@ -55,7 +64,7 @@ cmake --preset macos-release-universal \
 cmake --build --preset macos-release-universal --target SmartDuckingPluginval
 ```
 
-This runs the finished bundle at strictness 5. Normal configure, build, and test commands do not require pluginval. GitHub Actions performs the same validation on macOS and Windows. A release CPU matrix can be run with:
+This runs the finished bundle at strictness 5. Normal configure, build, and test commands do not require pluginval. GitHub Actions runs pluginval on macOS and Windows, plus unit and direct VST3 factory tests on all three platforms. A release CPU matrix can be run with:
 
 ```sh
 cmake --build --preset macos-release-universal --target SmartDuckingBenchmark
@@ -77,6 +86,14 @@ build-macos/release-universal/SmartDucking_artefacts/Release/VST3/Smart Ducking.
 ```
 
 The build does not copy files into the system VST3 directory.
+
+Every successful GitHub Actions run publishes three 30-day downloadable artifacts on its run page:
+
+- `Smart-Ducking-VST3-macOS-universal` (`arm64` and `x86_64`)
+- `Smart-Ducking-VST3-Windows-x64`
+- `Smart-Ducking-VST3-Linux-x64`
+
+Each artifact contains the ready-to-install `Smart Ducking.vst3` bundle for that platform. pluginval reports remain available as separate diagnostic artifacts.
 
 ## Plugin identity
 
@@ -150,7 +167,8 @@ Rout = R + 0.707 C + 0.707 Rs + 0.5 LFE
 - [x] Four factory starting-point presets and persistent A/B comparison
 - [x] Extracted PCE history and spectral-frame smoothing components with characterization tests
 - [x] Extended processor/factory coverage, variable-block equivalence, and CPU benchmark target
-- [x] Optional pluginval strictness-5 target and macOS/Windows CI
+- [x] Downloadable macOS Universal, Windows x64, and Linux x64 CI artifacts
+- [x] Optional pluginval strictness-5 target and macOS/Windows validation
 - [x] Finite two-second VST3 tail reporting verified through the factory API
 
 Third-party attribution and the Apache-2.0 license for the adapted PCE factor are recorded in `THIRD_PARTY_LICENSES.md`; the build copies this file into the VST3 bundle and next to the Standalone executable.

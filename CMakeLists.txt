@@ -268,7 +268,7 @@ if (SMART_DUCKING_BUILD_TESTS)
         target_compile_options(SmartDuckingBenchmark PRIVATE -Wno-macro-redefined)
     endif()
 
-    if (WIN32 OR APPLE)
+    if (WIN32 OR UNIX)
         add_executable(SmartDuckingVST3FactoryTests)
 
         target_sources(SmartDuckingVST3FactoryTests PRIVATE
@@ -285,6 +285,9 @@ if (SMART_DUCKING_BUILD_TESTS)
         if (APPLE)
             target_link_libraries(SmartDuckingVST3FactoryTests PRIVATE
                 "-framework CoreFoundation")
+        elseif (UNIX)
+            target_link_libraries(SmartDuckingVST3FactoryTests PRIVATE
+                ${CMAKE_DL_LIBS})
         endif()
 
         add_dependencies(SmartDuckingVST3FactoryTests SmartDucking_VST3)

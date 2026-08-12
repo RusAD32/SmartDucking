@@ -13,6 +13,8 @@
  #include <windows.h>
 #elif defined(__APPLE__)
  #include <CoreFoundation/CoreFoundation.h>
+#elif defined(__linux__) || defined(__FreeBSD__)
+ #include <dlfcn.h>
 #endif
 
 namespace
@@ -83,6 +85,26 @@ public:
             close();
             return false;
         }
+       #elif defined(__linux__) || defined(__FreeBSD__)
+        handle = dlopen (modulePath.c_str(), RTLD_NOW | RTLD_LOCAL);
+
+        if (handle == nullptr)
+        {
+            std::cerr << "dlopen failed for " << modulePath << ": " << dlerror() << '\n';
+            return false;
+        }
+
+        entry = reinterpret_cast<ModuleEntryFn> (dlsym (handle, "ModuleEntry"));
+        exit = reinterpret_cast<ModuleExitFn> (dlsym (handle, "ModuleExit"));
+        getFactory = reinterpret_cast<GetPluginFactoryFn> (
+            dlsym (handle, "GetPluginFactory"));
+
+        if (entry == nullptr || exit == nullptr || getFactory == nullptr || ! entry (handle))
+        {
+            std::cerr << "The Linux VST3 entry points could not be initialised\n";
+            close();
+            return false;
+        }
        #else
         (void) modulePath;
         return false;
@@ -119,6 +141,12 @@ public:
             CFRelease (handle);
             handle = nullptr;
         }
+       #elif defined(__linux__) || defined(__FreeBSD__)
+        if (handle != nullptr)
+        {
+            dlclose (handle);
+            handle = nullptr;
+        }
        #endif
 
         return ok;
@@ -138,6 +166,10 @@ private:
     using ModuleEntryFn = bool (*) (CFBundleRef);
     using ModuleExitFn = bool (*)();
     CFBundleRef handle = nullptr;
+   #elif defined(__linux__) || defined(__FreeBSD__)
+    using ModuleEntryFn = bool (*) (void*);
+    using ModuleExitFn = bool (*)();
+    void* handle = nullptr;
    #endif
 
     ModuleEntryFn entry = nullptr;

@@ -47,6 +47,17 @@
       "environment": {
         "LDFLAGS": ""
       }
+    },
+    {
+      "name": "linux-release-x64",
+      "displayName": "Linux Release (x86_64)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-linux/release-x64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "SMART_DUCKING_BUILD_TESTS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -67,6 +78,10 @@
     {
       "name": "macos-release-universal",
       "configurePreset": "macos-release-universal"
+    },
+    {
+      "name": "linux-release-x64",
+      "configurePreset": "linux-release-x64"
     }
   ],
   "testPresets": [
@@ -90,6 +105,11 @@
     {
       "name": "macos-release-universal",
       "configurePreset": "macos-release-universal",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-release-x64",
+      "configurePreset": "linux-release-x64",
       "output": { "outputOnFailure": true }
     }
   ]

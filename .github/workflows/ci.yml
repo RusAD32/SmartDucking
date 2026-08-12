@@ -26,6 +26,19 @@ jobs:
           ctest --preset macos-release-universal --output-on-failure
       - name: pluginval strictness 5
         run: cmake --build --preset macos-release-universal --target SmartDuckingPluginval
+      - name: Stage macOS VST3
+        run: |
+          mkdir -p dist
+          ditto \
+            "build-macos/release-universal/SmartDucking_artefacts/Release/VST3/Smart Ducking.vst3" \
+            "dist/Smart Ducking.vst3"
+      - name: Upload macOS Universal VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smart-Ducking-VST3-macOS-universal
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload pluginval log
         if: always()
         uses: actions/upload-artifact@v4
@@ -59,6 +72,22 @@ jobs:
       - name: pluginval strictness 5
         shell: pwsh
         run: cmake --build build-ci --config Release --target SmartDuckingPluginval
+      - name: Stage Windows VST3
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item `
+            -Recurse `
+            -Force `
+            "build-ci/SmartDucking_artefacts/Release/VST3/Smart Ducking.vst3" `
+            "dist/Smart Ducking.vst3"
+      - name: Upload Windows x64 VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smart-Ducking-VST3-Windows-x64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload pluginval log
         if: always()
         uses: actions/upload-artifact@v4
@@ -66,3 +95,46 @@ jobs:
           name: pluginval-windows
           path: build-ci/pluginval-results
           if-no-files-found: ignore
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install JUCE Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            libjack-jackd2-dev \
+            libx11-dev \
+            libxcomposite-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            ladspa-sdk \
+            ninja-build \
+            xauth \
+            xvfb
+      - name: Configure Linux x64 Release
+        run: cmake --preset linux-release-x64
+      - name: Build and unit/factory test
+        run: |
+          cmake --build --preset linux-release-x64 --parallel 4
+          xvfb-run -a ctest --preset linux-release-x64 --output-on-failure
+      - name: Stage Linux VST3
+        run: |
+          mkdir -p dist
+          cp -R \
+            "build-linux/release-x64/SmartDucking_artefacts/Release/VST3/Smart Ducking.vst3" \
+            "dist/Smart Ducking.vst3"
+      - name: Upload Linux x64 VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smart-Ducking-VST3-Linux-x64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
