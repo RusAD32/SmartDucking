@@ -130,15 +130,14 @@ jobs:
         run: >-
           cmake --preset linux-release-x64
           -DSMART_DUCKING_PLUGINVAL_EXECUTABLE=${{ github.workspace }}/pluginval/pluginval
-          -DSMART_DUCKING_PLUGINVAL_SKIP_GUI_TESTS=ON
       - name: Build and unit/factory test
         run: |
           cmake --build --preset linux-release-x64 \
             --target SmartDucking_VST3 SmartDuckingTests SmartDuckingVST3FactoryTests \
             --parallel 4
           xvfb-run -a ctest --preset linux-release-x64 --output-on-failure
-      - name: pluginval strictness 5 (headless)
-        timeout-minutes: 5
+      - name: pluginval strictness 5
+        timeout-minutes: 10
         run: >-
           xvfb-run -a cmake --build --preset linux-release-x64
           --target SmartDuckingPluginval

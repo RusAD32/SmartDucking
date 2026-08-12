@@ -182,8 +182,6 @@ endif()
 option(SMART_DUCKING_BUILD_TESTS "Build the Smart Ducking scaffold tests" ON)
 set(SMART_DUCKING_PLUGINVAL_EXECUTABLE "" CACHE FILEPATH
     "Optional pluginval executable used by the SmartDuckingPluginval target")
-option(SMART_DUCKING_PLUGINVAL_SKIP_GUI_TESTS
-    "Skip pluginval tests that instantiate the plugin editor" OFF)
 
 if (SMART_DUCKING_PLUGINVAL_EXECUTABLE)
     if (NOT EXISTS "${SMART_DUCKING_PLUGINVAL_EXECUTABLE}")
@@ -192,27 +190,17 @@ if (SMART_DUCKING_PLUGINVAL_EXECUTABLE)
     endif()
 
     set(smart_ducking_pluginval_output "${CMAKE_CURRENT_BINARY_DIR}/pluginval-results")
-    if (APPLE)
-        set(smart_ducking_pluginval_target "$<TARGET_BUNDLE_DIR:SmartDucking_VST3>")
-    elseif (UNIX)
-        # Linux VST3s are directory bundles too. Passing the inner .so makes
-        # pluginval treat it as a LADSPA module instead of discovering VST3.
-        set(smart_ducking_pluginval_target
-            "$<TARGET_FILE_DIR:SmartDucking_VST3>/../..")
-    else()
-        set(smart_ducking_pluginval_target "$<TARGET_FILE:SmartDucking_VST3>")
-    endif()
-
-    set(smart_ducking_pluginval_arguments)
-    if (SMART_DUCKING_PLUGINVAL_SKIP_GUI_TESTS)
-        list(APPEND smart_ducking_pluginval_arguments --skip-gui-tests)
+    get_target_property(smart_ducking_pluginval_target
+        SmartDucking_VST3 JUCE_PLUGIN_ARTEFACT_FILE)
+    if (NOT smart_ducking_pluginval_target)
+        message(FATAL_ERROR
+            "JUCE_PLUGIN_ARTEFACT_FILE is not set for SmartDucking_VST3")
     endif()
 
     add_custom_target(SmartDuckingPluginval
         COMMAND ${CMAKE_COMMAND} -E make_directory "${smart_ducking_pluginval_output}"
         COMMAND "${SMART_DUCKING_PLUGINVAL_EXECUTABLE}"
             --strictness-level 5
-            ${smart_ducking_pluginval_arguments}
             --validate-in-process
             --output-dir "${smart_ducking_pluginval_output}"
             "${smart_ducking_pluginval_target}"

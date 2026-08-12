@@ -483,7 +483,7 @@ cmake --preset macos-release-universal \
 cmake --build --preset macos-release-universal --target SmartDuckingPluginval
 ```
 
-Target запускает strictness 5 для готового bundle. Обычная сборка от pluginval не зависит; macOS/Windows/Linux GitHub Actions загружают фиксированную версию 1.0.4 и сохраняют validation output как artifact. Linux CI включает `SMART_DUCKING_PLUGINVAL_SKIP_GUI_TESTS=ON`, потому что GUI-набор pluginval 1.0.4 зависает под Xvfb; создание и поведение editor отдельно проверяются Linux unit/factory tests.
+Target запускает strictness 5 для готового bundle. Обычная сборка от pluginval не зависит; macOS/Windows/Linux GitHub Actions загружают фиксированную версию 1.0.4 и сохраняют validation output как artifact.
 
 ## 13. Realtime safety
 
