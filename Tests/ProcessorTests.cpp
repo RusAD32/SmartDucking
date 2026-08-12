@@ -134,6 +134,118 @@ ToneResult processTone (SmartDuckingAudioProcessor& processor,
     };
 }
 
+double processToneAfterMonitorSwitch (smart_ducking::MonitorMode monitorMode,
+                                      double frequencyHz)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 128;
+    constexpr int preSwitchSamples = 12288;
+    constexpr int postSwitchSamples = 16384;
+    constexpr int measurementStart = 8192;
+    constexpr float amplitude = 0.5f;
+    SmartDuckingAudioProcessor processor;
+    setParameter (processor, smart_ducking::parameter_ids::processingMode, 1.0f);
+    setParameter (processor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+    setParameter (processor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+    processor.prepareToPlay (sampleRate, blockSize);
+    juce::AudioBuffer<float> buffer (8, blockSize);
+    juce::MidiBuffer midi;
+    double phase = 0.0;
+    const auto phaseIncrement = juce::MathConstants<double>::twoPi * frequencyHz / sampleRate;
+
+    const auto fillAndProcess = [&]
+    {
+        buffer.clear();
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto value = amplitude * static_cast<float> (std::sin (phase));
+            phase += phaseIncrement;
+            if (phase >= juce::MathConstants<double>::twoPi)
+                phase -= juce::MathConstants<double>::twoPi;
+            buffer.setSample (0, sample, value);
+            buffer.setSample (1, sample, value);
+        }
+        processor.processBlock (buffer, midi);
+    };
+
+    for (int processed = 0; processed < preSwitchSamples; processed += blockSize)
+        fillAndProcess();
+
+    setParameter (processor,
+                  smart_ducking::parameter_ids::monitorMode,
+                  static_cast<float> (monitorMode));
+    double inputEnergy = 0.0;
+    double outputEnergy = 0.0;
+
+    for (int processed = 0; processed < postSwitchSamples; processed += blockSize)
+    {
+        fillAndProcess();
+
+        if (processed < measurementStart)
+            continue;
+
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            inputEnergy += static_cast<double> (amplitude) * amplitude * 0.5;
+            const auto output = static_cast<double> (buffer.getSample (0, sample));
+            outputEnergy += output * output;
+        }
+    }
+
+    return std::sqrt (outputEnergy / inputEnergy);
+}
+
+std::vector<float> renderNormalCrossoverMonitor (
+    smart_ducking::MonitorMode monitorMode)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 128;
+    constexpr int totalSamples = 32768;
+    constexpr int warmupSamples = 8192;
+    SmartDuckingAudioProcessor processor;
+    setParameter (processor, smart_ducking::parameter_ids::processingMode, 1.0f);
+    setParameter (processor,
+                  smart_ducking::parameter_ids::monitorMode,
+                  static_cast<float> (monitorMode));
+    setParameter (processor, smart_ducking::parameter_ids::crossoverHz, 750.0f);
+    setParameter (processor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+    setParameter (processor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+    processor.prepareToPlay (sampleRate, blockSize);
+
+    juce::AudioBuffer<float> buffer (8, blockSize);
+    juce::MidiBuffer midi;
+    std::vector<float> output;
+    output.reserve (totalSamples - warmupSamples);
+
+    for (int processed = 0; processed < totalSamples; processed += blockSize)
+    {
+        buffer.clear();
+
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto absoluteSample = processed + sample;
+            const auto phase = juce::MathConstants<double>::twoPi
+                             * static_cast<double> (absoluteSample) / sampleRate;
+            const auto impulse = absoluteSample % 997 == 0 ? 0.18f : 0.0f;
+            const auto value = 0.18f * static_cast<float> (std::sin (73.0 * phase))
+                             + 0.14f * static_cast<float> (std::sin (750.0 * phase))
+                             + 0.11f * static_cast<float> (std::sin (6341.0 * phase))
+                             + impulse;
+            buffer.setSample (0, sample, value);
+            buffer.setSample (1, sample, value * 0.63f);
+        }
+
+        processor.processBlock (buffer, midi);
+
+        if (processed >= warmupSamples)
+            output.insert (output.end(),
+                           buffer.getReadPointer (0),
+                           buffer.getReadPointer (0) + blockSize);
+    }
+
+    return output;
+}
+
 SpatialToneResult processSpatialTone (SmartDuckingAudioProcessor& processor,
                                       const std::array<float, 6>& mainChannels,
                                       const std::array<float, 6>& voiceChannels = {},
@@ -487,6 +599,40 @@ int main()
         expect (false, "Monitor Mode parameter exists");
     }
 
+    for (const auto* channelOrderId : {
+             smart_ducking::parameter_ids::mainChannelOrder,
+             smart_ducking::parameter_ids::voiceChannelOrder,
+             smart_ducking::parameter_ids::outputChannelOrder })
+    {
+        if (const auto* channelOrder = state.getParameter (channelOrderId))
+        {
+            expect (channelOrder->getAllValueStrings()
+                        == juce::StringArray { "ITU / SMPTE", "REAPER / VLC",
+                                               "Film", "DTS / MPEG-D" }
+                        && approximatelyEqual (
+                            *state.getRawParameterValue (channelOrderId),
+                            0.0f),
+                    "5.1 channel-order parameters expose four formats and default to ITU / SMPTE");
+        }
+        else
+        {
+            expect (false, "5.1 channel-order parameter exists");
+        }
+    }
+    expect (smart_ducking::getMeterChannelsForOrder (
+                smart_ducking::SurroundChannelOrder::ituSmpte)
+                == std::array<int, 5> { 0, 2, 1, 3, 4 }
+                && smart_ducking::getMeterChannelsForOrder (
+                    smart_ducking::SurroundChannelOrder::reaperVlc)
+                       == std::array<int, 5> { 0, 2, 3, 4, 1 }
+                && smart_ducking::getMeterChannelsForOrder (
+                    smart_ducking::SurroundChannelOrder::film)
+                       == std::array<int, 5> { 0, 1, 2, 3, 4 }
+                && smart_ducking::getMeterChannelsForOrder (
+                    smart_ducking::SurroundChannelOrder::dtsMpegD)
+                       == std::array<int, 5> { 1, 0, 2, 3, 4 },
+            "surround meter columns and labels follow each selected physical channel order");
+
     {
         SmartDuckingAudioProcessor presetProcessor;
         setParameter (presetProcessor, smart_ducking::parameter_ids::globalBypass, 1.0f);
@@ -599,6 +745,17 @@ int main()
                     && globallyBypassedResult.rightRatio > 0.95,
                 "global bypass returns the latency-aligned dry Main signal");
 
+        SmartDuckingAudioProcessor allStagesBypassed;
+        configureWideband (allStagesBypassed);
+        setParameter (allStagesBypassed, smart_ducking::parameter_ids::crossoverBypass, 1.0f);
+        setParameter (allStagesBypassed, smart_ducking::parameter_ids::widebandBypass, 1.0f);
+        setParameter (allStagesBypassed, smart_ducking::parameter_ids::spectralBypass, 1.0f);
+        const auto allStagesBypassedResult = processTone (
+            allStagesBypassed, 1000.0, 1.0f, 1.0f);
+        expect (allStagesBypassedResult.leftRatio > 0.95
+                    && allStagesBypassed.getProcessedFftFrameCount() == 0,
+                "bypassing every ducking stage skips the FFT path");
+
         SmartDuckingAudioProcessor solo;
         configureWideband (solo);
         setParameter (solo, smart_ducking::parameter_ids::widebandBypass, 1.0f);
@@ -639,6 +796,9 @@ int main()
             previousOutput = bypassBuffer.getSample (0, bypassBlockSize - 1);
         }
 
+        expect (! smoothGlobalBypass.isGlobalBypassDspSleeping()
+                    && smoothGlobalBypass.isHeavyPathActive(),
+                "active voice keeps the ducking DSP awake before global bypass");
         setParameter (smoothGlobalBypass, smart_ducking::parameter_ids::globalBypass, 1.0f);
         auto maximumBypassStep = 0.0f;
         for (int block = 0; block < 32; ++block)
@@ -664,6 +824,30 @@ int main()
 
         expect (maximumBypassStep < 0.01f && previousOutput > 0.249f,
                 "global bypass crossfades to the dry path without a discontinuity");
+        expect (smoothGlobalBypass.isGlobalBypassDspSleeping()
+                    && ! smoothGlobalBypass.isHeavyPathActive(),
+                "settled global bypass suspends the crossover, detector, FFT and matrix path");
+
+        setParameter (smoothGlobalBypass, smart_ducking::parameter_ids::globalBypass, 0.0f);
+        const auto wakeBlocks = (smoothGlobalBypass.getLatencySamples()
+                                 + static_cast<int> (0.030 * 48000.0))
+                              / bypassBlockSize
+                              + 4;
+        for (int block = 0; block < wakeBlocks; ++block)
+        {
+            bypassBuffer.clear();
+            for (int sample = 0; sample < bypassBlockSize; ++sample)
+            {
+                bypassBuffer.setSample (0, sample, 0.25f);
+                bypassBuffer.setSample (1, sample, 0.25f);
+                bypassBuffer.setSample (2, sample, 1.0f);
+                bypassBuffer.setSample (3, sample, 1.0f);
+            }
+            smoothGlobalBypass.processBlock (bypassBuffer, bypassMidi);
+        }
+        expect (! smoothGlobalBypass.isGlobalBypassDspSleeping()
+                    && smoothGlobalBypass.isHeavyPathActive(),
+                "leaving global bypass warms the latency-aligned wet path before fading it in");
     }
 
     {
@@ -764,6 +948,49 @@ int main()
                     : "NORMAL Crossover High monitors the complementary FFT high band");
         expect (lowMonitor.getLatencySamples() == highMonitor.getLatencySamples(),
                 "monitoring does not change PDC");
+    }
+
+
+    {
+        const auto liveLowPass = processToneAfterMonitorSwitch (
+            smart_ducking::MonitorMode::crossoverLow, 40.0);
+        const auto liveLowReject = processToneAfterMonitorSwitch (
+            smart_ducking::MonitorMode::crossoverLow, 1000.0);
+        const auto liveHighReject = processToneAfterMonitorSwitch (
+            smart_ducking::MonitorMode::crossoverHigh, 40.0);
+        const auto liveHighPass = processToneAfterMonitorSwitch (
+            smart_ducking::MonitorMode::crossoverHigh, 1000.0);
+        expect (liveLowPass > 0.9 && liveLowReject < 0.05,
+                "NORMAL live switch to Crossover Low outputs only the FFT low branch");
+        expect (liveHighReject < 0.05 && liveHighPass > 0.9,
+                "NORMAL live switch to Crossover High outputs only the FFT high branch");
+    }
+
+    {
+        const auto fullBand = renderNormalCrossoverMonitor (
+            smart_ducking::MonitorMode::normal);
+        const auto lowBand = renderNormalCrossoverMonitor (
+            smart_ducking::MonitorMode::crossoverLow);
+        const auto highBand = renderNormalCrossoverMonitor (
+            smart_ducking::MonitorMode::crossoverHigh);
+        expect (fullBand.size() == lowBand.size() && lowBand.size() == highBand.size(),
+                "NORMAL crossover monitor renders matching signal lengths");
+
+        double referenceEnergy = 0.0;
+        double errorEnergy = 0.0;
+        float maximumError = 0.0f;
+
+        for (size_t sample = 0; sample < fullBand.size(); ++sample)
+        {
+            const auto error = lowBand[sample] + highBand[sample] - fullBand[sample];
+            referenceEnergy += static_cast<double> (fullBand[sample]) * fullBand[sample];
+            errorEnergy += static_cast<double> (error) * error;
+            maximumError = juce::jmax (maximumError, std::abs (error));
+        }
+
+        const auto relativeRmsError = std::sqrt (errorEnergy / referenceEnergy);
+        expect (relativeRmsError < 1.0e-4 && maximumError < 1.0e-4f,
+                "NORMAL FFT Low plus High reconstructs the latency-aligned full-band signal");
     }
 
     {
@@ -880,46 +1107,99 @@ int main()
         configurationProcessor.setPlayHead (nullptr);
     }
 
+    for (int orderIndex = 0;
+         orderIndex < smart_ducking::surroundChannelOrderCount;
+         ++orderIndex)
     {
+        const auto order = static_cast<smart_ducking::SurroundChannelOrder> (orderIndex);
+        const auto& physicalToCanonical =
+            smart_ducking::getPhysicalToCanonicalChannels (order);
         SmartDuckingAudioProcessor routingProcessor (smart_ducking::PluginVariant::surround);
+        setParameter (routingProcessor,
+                      smart_ducking::parameter_ids::mainChannelOrder,
+                      static_cast<float> (orderIndex));
         setParameter (routingProcessor, smart_ducking::parameter_ids::voiceFormat, 1.0f);
         setParameter (routingProcessor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
         setParameter (routingProcessor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
-
-        for (int channel = 0; channel < 6; ++channel)
-        {
-            std::array<float, 6> main {};
-            main[static_cast<size_t> (channel)] = 1.0f;
-            const auto routed = processSpatialTone (routingProcessor, main);
-
-            for (int output = 0; output < 6; ++output)
-                expect (approximatelyEqual (static_cast<float> (routed.outputRatios[static_cast<size_t> (output)]),
-                                            output == channel ? 1.0f : 0.0f,
-                                            0.004f),
-                        "standard 5.1 routing preserves the canonical channel order");
-        }
-    }
-
-    {
-        SmartDuckingAudioProcessor vlcProcessor (smart_ducking::PluginVariant::surround);
-        setParameter (vlcProcessor, smart_ducking::parameter_ids::voiceFormat, 1.0f);
-        setParameter (vlcProcessor, smart_ducking::parameter_ids::vlcMode, 1.0f);
-        setParameter (vlcProcessor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
-        setParameter (vlcProcessor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
-        const std::array<int, 6> vlcInputToCanonicalOutput { 0, 1, 4, 5, 2, 3 };
 
         for (int input = 0; input < 6; ++input)
         {
             std::array<float, 6> main {};
             main[static_cast<size_t> (input)] = 1.0f;
-            const auto routed = processSpatialTone (vlcProcessor, main);
+            const auto routed = processSpatialTone (routingProcessor, main);
 
             for (int output = 0; output < 6; ++output)
-                expect (approximatelyEqual (static_cast<float> (routed.outputRatios[static_cast<size_t> (output)]),
-                                            output == vlcInputToCanonicalOutput[static_cast<size_t> (input)]
-                                                ? 1.0f : 0.0f,
-                                            0.004f),
-                        "VLC mode remaps Main input to canonical 5.1 output");
+                expect (approximatelyEqual (
+                            static_cast<float> (
+                                routed.outputRatios[static_cast<size_t> (output)]),
+                            output == physicalToCanonical[static_cast<size_t> (input)]
+                                ? 1.0f : 0.0f,
+                            0.004f),
+                        "all Main 5.1 channel orders map physical inputs to canonical processing roles");
+        }
+
+        SmartDuckingAudioProcessor outputOrderProcessor (
+            smart_ducking::PluginVariant::surround);
+        setParameter (outputOrderProcessor,
+                      smart_ducking::parameter_ids::outputChannelOrder,
+                      static_cast<float> (orderIndex));
+        setParameter (outputOrderProcessor, smart_ducking::parameter_ids::voiceFormat, 1.0f);
+        setParameter (outputOrderProcessor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+        setParameter (outputOrderProcessor,
+                      smart_ducking::parameter_ids::spectralAmountDb,
+                      0.0f);
+
+        for (int canonicalInput = 0; canonicalInput < 6; ++canonicalInput)
+        {
+            std::array<float, 6> main {};
+            main[static_cast<size_t> (canonicalInput)] = 1.0f;
+            const auto routed = processSpatialTone (outputOrderProcessor, main);
+
+            for (int physicalOutput = 0; physicalOutput < 6; ++physicalOutput)
+                expect (approximatelyEqual (
+                            static_cast<float> (routed.outputRatios[
+                                static_cast<size_t> (physicalOutput)]),
+                            physicalToCanonical[static_cast<size_t> (physicalOutput)]
+                                    == canonicalInput
+                                ? 1.0f : 0.0f,
+                            0.004f),
+                        "all Output 5.1 channel orders map canonical roles to physical outputs");
+        }
+
+        SmartDuckingAudioProcessor voiceOrderProcessor (
+            smart_ducking::PluginVariant::surround);
+        setParameter (voiceOrderProcessor,
+                      smart_ducking::parameter_ids::voiceFormat,
+                      1.0f);
+        setParameter (voiceOrderProcessor,
+                      smart_ducking::parameter_ids::voiceChannelOrder,
+                      static_cast<float> (orderIndex));
+        voiceOrderProcessor.notifyEditorOpened();
+        constexpr std::array<int, 6> canonicalToMeter { 0, 2, 1, -1, 3, 4 };
+
+        for (int physicalVoice = 0; physicalVoice < 6; ++physicalVoice)
+        {
+            std::array<float, 6> voice {};
+            voice[static_cast<size_t> (physicalVoice)] = 1.0f;
+            static_cast<void> (processSpatialTone (
+                voiceOrderProcessor, { 1, 0, 0, 0, 0, 0 }, voice));
+            const std::array<float, 5> voicePeaks {
+                voiceOrderProcessor.getSidechainPeakLeft(),
+                voiceOrderProcessor.getSidechainPeakCentre(),
+                voiceOrderProcessor.getSidechainPeakRight(),
+                voiceOrderProcessor.getSidechainPeakLeftSurround(),
+                voiceOrderProcessor.getSidechainPeakRightSurround()
+            };
+            const auto canonicalVoice =
+                physicalToCanonical[static_cast<size_t> (physicalVoice)];
+            const auto expectedMeter =
+                canonicalToMeter[static_cast<size_t> (canonicalVoice)];
+
+            for (int meter = 0; meter < 5; ++meter)
+                expect (approximatelyEqual (voicePeaks[static_cast<size_t> (meter)],
+                                            meter == expectedMeter ? 1.0f : 0.0f,
+                                            0.001f),
+                        "all Voice SC 5.1 channel orders map physical inputs to canonical detectors");
         }
     }
 
@@ -962,18 +1242,46 @@ int main()
 
         SmartDuckingAudioProcessor globallyBypassedRouting (
             smart_ducking::PluginVariant::surround);
-        setParameter (globallyBypassedRouting, smart_ducking::parameter_ids::vlcMode, 1.0f);
+        setParameter (globallyBypassedRouting,
+                      smart_ducking::parameter_ids::mainChannelOrder,
+                      1.0f);
         setParameter (globallyBypassedRouting, smart_ducking::parameter_ids::downmix, 1.0f);
         setParameter (globallyBypassedRouting, smart_ducking::parameter_ids::dropLfe, 1.0f);
         setParameter (globallyBypassedRouting,
                       smart_ducking::parameter_ids::globalBypass,
                       1.0f);
-        const auto rawLfe = processSpatialTone (
-            globallyBypassedRouting, { 0, 0, 0, 1, 0, 0 });
-        expect (approximatelyEqual (static_cast<float> (rawLfe.outputRatios[3]), 1.0f, 0.004f)
-                    && rawLfe.outputRatios[0] < 0.004
-                    && rawLfe.outputRatios[1] < 0.004,
-                "global bypass also bypasses VLC remapping, downmix, and Drop LFE");
+        const auto bypassedCentre = processSpatialTone (
+            globallyBypassedRouting, { 0, 0, 0, 0, 1, 0 });
+        expect (approximatelyEqual (
+                    static_cast<float> (bypassedCentre.outputRatios[0]),
+                    0.70710678f,
+                    0.004f)
+                    && approximatelyEqual (
+                        static_cast<float> (bypassedCentre.outputRatios[1]),
+                        0.70710678f,
+                        0.004f),
+                "global bypass preserves Main channel remapping and stereo Downmix");
+        const auto bypassedLfe = processSpatialTone (
+            globallyBypassedRouting, { 0, 0, 0, 0, 0, 1 });
+        expect (*std::max_element (bypassedLfe.outputRatios.begin(),
+                                   bypassedLfe.outputRatios.end()) < 0.004,
+                "global bypass preserves Drop LFE");
+
+        SmartDuckingAudioProcessor bypassedOutputOrder (
+            smart_ducking::PluginVariant::surround);
+        setParameter (bypassedOutputOrder,
+                      smart_ducking::parameter_ids::outputChannelOrder,
+                      2.0f);
+        setParameter (bypassedOutputOrder,
+                      smart_ducking::parameter_ids::globalBypass,
+                      1.0f);
+        const auto bypassedFilmCentre = processSpatialTone (
+            bypassedOutputOrder, { 0, 0, 1, 0, 0, 0 });
+        expect (approximatelyEqual (
+                    static_cast<float> (bypassedFilmCentre.outputRatios[1]),
+                    1.0f,
+                    0.004f),
+                "global bypass preserves the configured surround Output channel order");
     }
 
     {
@@ -1042,24 +1350,26 @@ int main()
         expect (std::abs (lfeSettled.getSample (0, blockSize - 1)) < 0.01f,
                 "Drop LFE transition reaches silence without a one-sample switch");
 
-        SmartDuckingAudioProcessor smoothVlcOrder (smart_ducking::PluginVariant::surround);
-        setParameter (smoothVlcOrder, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
-        setParameter (smoothVlcOrder, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
-        smoothVlcOrder.prepareToPlay (sampleRate, blockSize);
-        static_cast<void> (processConstant (smoothVlcOrder, 2, warmupBlocks,
+        SmartDuckingAudioProcessor smoothMainOrder (smart_ducking::PluginVariant::surround);
+        setParameter (smoothMainOrder, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+        setParameter (smoothMainOrder, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
+        smoothMainOrder.prepareToPlay (sampleRate, blockSize);
+        static_cast<void> (processConstant (smoothMainOrder, 2, warmupBlocks,
                                             [] (const auto&) {}));
-        setParameter (smoothVlcOrder, smart_ducking::parameter_ids::vlcMode, 1.0f);
-        const auto vlcSettled = processConstant (
-            smoothVlcOrder, 2, settleBlocks + 64,
+        setParameter (smoothMainOrder,
+                      smart_ducking::parameter_ids::mainChannelOrder,
+                      1.0f);
+        const auto reaperOrderSettled = processConstant (
+            smoothMainOrder, 2, settleBlocks + 64,
             [&] (const auto& firstBlock)
             {
                 expect (firstBlock.getSample (2, 0) > 0.98f
                             && std::abs (firstBlock.getSample (4, 0)) < 0.01f,
-                        "VLC-order transition preserves the latency-aligned current mapping initially");
+                        "channel-order transition preserves the latency-aligned current mapping initially");
             });
-        expect (std::abs (vlcSettled.getSample (2, blockSize - 1)) < 0.01f
-                    && vlcSettled.getSample (4, blockSize - 1) > 0.99f,
-                "VLC-order transition reaches the remapped channel without a one-sample switch");
+        expect (std::abs (reaperOrderSettled.getSample (2, blockSize - 1)) < 0.01f
+                    && reaperOrderSettled.getSample (4, blockSize - 1) > 0.99f,
+                "channel-order transition reaches the remapped channel without a one-sample switch");
     }
 
     {
@@ -1635,6 +1945,33 @@ int main()
                 == stereoSidechainSuppressor.getProcessedFftFrameCount(),
             "stereo Voice runs one sidechain PCE per active Main frame");
 
+    smart_ducking::StereoSpectralLcrProcessor weightingCacheSuppressor;
+    weightingCacheSuppressor.prepare (48000.0);
+    auto weightingCacheParameters =
+        smart_ducking::StereoSpectralLcrProcessor::Parameters {};
+    weightingCacheParameters.attackMs = 0.0f;
+    weightingCacheSuppressor.setParameters (weightingCacheParameters);
+    const auto processWeightingFrames = [&weightingCacheSuppressor] (int samples)
+    {
+        for (int sample = 0; sample < samples; ++sample)
+            static_cast<void> (weightingCacheSuppressor.processSample (
+                0.25f, 0.20f, 1.0f, 0.0f));
+    };
+    processWeightingFrames (weightingCacheSuppressor.getLatencySamples() * 2);
+    const auto initialWeightingUpdates = weightingCacheSuppressor.getWeightingCurveUpdateCount();
+    weightingCacheSuppressor.setParameters (weightingCacheParameters);
+    processWeightingFrames (weightingCacheSuppressor.getLatencySamples());
+    expect (initialWeightingUpdates == 1
+                && weightingCacheSuppressor.getWeightingCurveUpdateCount()
+                       == initialWeightingUpdates,
+            "unchanged Weighting EQ parameters reuse the cached FFT curve");
+    weightingCacheParameters.weightGainDb += 1.0f;
+    weightingCacheSuppressor.setParameters (weightingCacheParameters);
+    processWeightingFrames (weightingCacheSuppressor.getLatencySamples());
+    expect (weightingCacheSuppressor.getWeightingCurveUpdateCount()
+                == initialWeightingUpdates + 1,
+            "changing Weighting EQ invalidates its FFT curve exactly once");
+
     smart_ducking::StereoSpectralLcrProcessor immediateMaskSuppressor;
     immediateMaskSuppressor.prepare (48000.0);
     auto immediateMaskParameters = smart_ducking::StereoSpectralLcrProcessor::Parameters {};
@@ -2116,6 +2453,9 @@ int main()
     setParameter (processor, smart_ducking::parameter_ids::weightFrequencyHz, savedWeightFrequency);
     setParameter (processor, smart_ducking::parameter_ids::widebandBypass, 1.0f);
     setParameter (processor, smart_ducking::parameter_ids::globalBypass, 1.0f);
+    setParameter (processor, smart_ducking::parameter_ids::mainChannelOrder, 2.0f);
+    setParameter (processor, smart_ducking::parameter_ids::voiceChannelOrder, 3.0f);
+    setParameter (processor, smart_ducking::parameter_ids::outputChannelOrder, 1.0f);
     setParameter (processor,
                   smart_ducking::parameter_ids::monitorMode,
                   static_cast<float> (smart_ducking::MonitorMode::spectralDelta));
@@ -2143,6 +2483,19 @@ int main()
                         smart_ducking::parameter_ids::globalBypass),
                     1.0f),
             "global/stage bypass and Monitor Mode survive state round-trip");
+    expect (approximatelyEqual (
+                *restoredProcessor.getParameterState().getRawParameterValue (
+                    smart_ducking::parameter_ids::mainChannelOrder),
+                2.0f)
+                && approximatelyEqual (
+                    *restoredProcessor.getParameterState().getRawParameterValue (
+                        smart_ducking::parameter_ids::voiceChannelOrder),
+                    3.0f)
+                && approximatelyEqual (
+                    *restoredProcessor.getParameterState().getRawParameterValue (
+                        smart_ducking::parameter_ids::outputChannelOrder),
+                    1.0f),
+            "all three 5.1 channel orders survive project-state round-trip");
     expect (static_cast<int> (restoredProcessor.getParameterState().state.getProperty (
                 "uiPage", -1)) == 1
                 && ! restoredProcessor.getParameterState().state.hasProperty ("uiEditorMode")
@@ -2181,6 +2534,37 @@ int main()
                     savedWeightFrequency,
                     0.1f),
                 "legacy state migration preserves current parameter values");
+    }
+
+    {
+        auto legacyState = processor.getParameterState().copyState();
+        auto foundLegacyVlcMode = false;
+
+        for (auto child : legacyState)
+        {
+            if (child.getProperty ("id").toString()
+                == smart_ducking::parameter_ids::mainChannelOrder)
+            {
+                child.setProperty ("value", 1.0f, nullptr);
+                foundLegacyVlcMode = true;
+                break;
+            }
+        }
+
+        expect (foundLegacyVlcMode,
+                "legacy APVTS state contains the retained VLC parameter ID");
+        juce::MemoryBlock legacyStateData;
+        if (const auto legacyXml = legacyState.createXml())
+            juce::AudioProcessor::copyXmlToBinary (*legacyXml, legacyStateData);
+
+        SmartDuckingAudioProcessor migratedProcessor;
+        migratedProcessor.setStateInformation (legacyStateData.getData(),
+                                                static_cast<int> (legacyStateData.getSize()));
+        expect (approximatelyEqual (
+                    *migratedProcessor.getParameterState().getRawParameterValue (
+                        smart_ducking::parameter_ids::mainChannelOrder),
+                    1.0f),
+                "legacy VLC On state migrates to the REAPER / VLC channel-order choice");
     }
 
     {

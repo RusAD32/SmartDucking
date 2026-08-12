@@ -53,6 +53,10 @@ private:
     void saveUiState();
     void restoreUiState();
     void mirrorMatrixEdit (size_t sourceIndex);
+    void showChannelOrderMenu (const char* parameterId,
+                               const juce::String& title,
+                               juce::Rectangle<float> targetBounds,
+                               juce::Point<float> clickPosition);
     int getVoiceSpatialChannelCount() const noexcept;
     int getMainSpatialChannelCount() const noexcept;
     void applyMatrixValues (const std::array<float, 25>&);
@@ -65,7 +69,8 @@ private:
                                  int visibleChannels,
                                  const std::array<float, 5>* wideReductionValues = nullptr,
                                  const std::array<float, 5>* spectralReductionValues = nullptr,
-                                 bool highlightLabel = false);
+                                 std::array<int, 5> channelOrder = { 0, 2, 1, 3, 4 },
+                                 bool menuAvailable = false);
 
     SmartDuckingAudioProcessor& audioProcessor;
     std::unique_ptr<OnWaveLookAndFeel> onWaveLookAndFeel;
@@ -135,6 +140,8 @@ private:
     juce::Rectangle<float> duckingLampBounds;
     juce::Rectangle<float> activityStatusBounds;
     juce::Rectangle<float> mainInputMeterBounds;
+    juce::Rectangle<float> voiceInputMeterBounds;
+    juce::Rectangle<float> outputMeterBounds;
     bool duckingIndicatorActive = false;
     bool editorVisualisationActive = true;
     int displayedMatrixRows = 0;

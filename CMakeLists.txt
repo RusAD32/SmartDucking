@@ -91,6 +91,7 @@ target_sources(SmartDucking PRIVATE
     Source/SidechainEnvelope.h
     Source/SpectralFrameSmoothers.h
     Source/SpectralSuppressor.h
+    Source/SurroundChannelOrder.h
     Source/PluginEditor.h
     Source/PluginEditor.cpp
     Source/PluginProcessor.h
@@ -228,6 +229,7 @@ if (SMART_DUCKING_BUILD_TESTS)
         Source/SidechainEnvelope.h
         Source/SpectralFrameSmoothers.h
         Source/SpectralSuppressor.h
+        Source/SurroundChannelOrder.h
         Source/PluginEditor.h
         Source/PluginEditor.cpp
         Source/PluginProcessor.h

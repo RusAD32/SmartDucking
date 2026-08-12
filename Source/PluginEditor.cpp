@@ -28,6 +28,7 @@ const auto spectralReductionColour = maskColour;
 const auto borderColour = juce::Colours::white.withAlpha (0.10f);
 const auto cardColour = juce::Colours::white.withAlpha (0.045f);
 const juce::Identifier bypassIconProperty { "bypassIcon" };
+const juce::Identifier crossoverMonitorBandProperty { "crossoverMonitorBand" };
 
 float decaySignalPeak (float displayed, float current) noexcept
 {
@@ -53,11 +54,6 @@ float signalProportion (float linearPeak) noexcept
 
     const auto decibels = juce::Decibels::gainToDecibels (linearPeak, meterFloorDb);
     return juce::jlimit (0.0f, 1.0f, (decibels - meterFloorDb) / -meterFloorDb);
-}
-
-int meterValueIndexForRow (int row, int visibleChannels) noexcept
-{
-    return visibleChannels == 2 && row == 1 ? 2 : row;
 }
 
 void drawCard (juce::Graphics& graphics, juce::Rectangle<float> bounds, float corner = 10.0f)
@@ -100,6 +96,65 @@ void drawBypassIcon (juce::Graphics& graphics,
                                                         juce::PathStrokeType::rounded));
     graphics.fillEllipse (juce::Rectangle<float> (3.4f, 3.4f).withCentre ({ splitX, centreY }));
     graphics.fillEllipse (juce::Rectangle<float> (3.4f, 3.4f).withCentre ({ mergeX, centreY }));
+}
+
+void drawCrossoverMonitorIcon (juce::Graphics& graphics,
+                               juce::Rectangle<float> bounds,
+                               juce::Colour colour,
+                               bool lowPass)
+{
+    bounds = bounds.withSizeKeepingCentre (
+        juce::jmin (36.0f, bounds.getWidth() - 8.0f),
+        juce::jmin (18.0f, bounds.getHeight() - 8.0f));
+    const auto headphone = bounds.removeFromLeft (14.0f);
+    bounds.removeFromLeft (4.0f);
+    const auto curve = bounds;
+    juce::Path headband;
+    headband.startNewSubPath (headphone.getX() + 1.5f, headphone.getBottom() - 5.0f);
+    headband.cubicTo (headphone.getX() + 1.5f, headphone.getY() + 1.0f,
+                      headphone.getRight() - 1.5f, headphone.getY() + 1.0f,
+                      headphone.getRight() - 1.5f, headphone.getBottom() - 5.0f);
+    graphics.setColour (colour);
+    graphics.strokePath (headband,
+                         juce::PathStrokeType (1.8f,
+                                               juce::PathStrokeType::curved,
+                                               juce::PathStrokeType::rounded));
+    graphics.fillRoundedRectangle (
+        juce::Rectangle<float> (headphone.getX(), headphone.getBottom() - 7.0f, 3.2f, 6.0f),
+        1.2f);
+    graphics.fillRoundedRectangle (
+        juce::Rectangle<float> (headphone.getRight() - 3.2f,
+                                headphone.getBottom() - 7.0f,
+                                3.2f,
+                                6.0f),
+        1.2f);
+
+    const auto upper = curve.getY() + 3.0f;
+    const auto lower = curve.getBottom() - 3.0f;
+    const auto knee = curve.getX() + curve.getWidth() * 0.48f;
+    juce::Path response;
+
+    if (lowPass)
+    {
+        response.startNewSubPath (curve.getX(), upper);
+        response.lineTo (knee, upper);
+        response.cubicTo (knee + curve.getWidth() * 0.16f, upper,
+                          curve.getRight() - curve.getWidth() * 0.18f, lower,
+                          curve.getRight(), lower);
+    }
+    else
+    {
+        response.startNewSubPath (curve.getX(), lower);
+        response.cubicTo (curve.getX() + curve.getWidth() * 0.18f, lower,
+                          knee - curve.getWidth() * 0.16f, upper,
+                          knee, upper);
+        response.lineTo (curve.getRight(), upper);
+    }
+
+    graphics.strokePath (response,
+                         juce::PathStrokeType (1.8f,
+                                               juce::PathStrokeType::curved,
+                                               juce::PathStrokeType::rounded));
 }
 
 juce::String frequencyText (float frequency)
@@ -302,6 +357,17 @@ struct SmartDuckingAudioProcessorEditor::OnWaveLookAndFeel final : juce::LookAnd
                 bypassIconProperty, false)))
         {
             drawBypassIcon (graphics, button.getLocalBounds().toFloat(), colour);
+            return;
+        }
+
+        const auto crossoverMonitorBand = static_cast<int> (
+            button.getProperties().getWithDefault (crossoverMonitorBandProperty, 0));
+        if (crossoverMonitorBand != 0)
+        {
+            drawCrossoverMonitorIcon (graphics,
+                                      button.getLocalBounds().toFloat(),
+                                      colour,
+                                      crossoverMonitorBand == 1);
             return;
         }
 
@@ -1818,7 +1884,7 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     globalBypassButton.setComponentID ("globalBypassButton");
     globalBypassButton.setClickingTogglesState (true);
     globalBypassButton.setTooltip (
-        "Bypass the complete plugin through a latency-aligned dry path.");
+        "Bypass ducking and monitoring while preserving channel-order routing and Downmix.");
     globalBypassAttachment = std::make_unique<ButtonAttachment> (
         audioProcessor.getParameterState(), globalBypass, globalBypassButton);
 
@@ -1874,6 +1940,11 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
             {
                 button.getProperties().set (bypassIconProperty, true);
                 button.setComponentID ("stageBypassButton" + juce::String (stage));
+            }
+            else if (stage == 0)
+            {
+                button.getProperties().set (crossoverMonitorBandProperty,
+                                            static_cast<int> (control));
             }
             button.setTooltip (control == 0
                 ? "Bypass this stage independently."
@@ -2223,11 +2294,25 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
     const auto leftHalf = (leftMeters.getWidth() - 6.0f) * 0.5f;
     const auto voiceChannels = getVoiceSpatialChannelCount() == 5 ? 5 : 2;
     const auto outputChannels = audioProcessor.getOutputMeterChannelCount();
-    const auto* vlcMode = audioProcessor.getParameterState().getRawParameterValue (
-        smart_ducking::parameter_ids::vlcMode);
-    const auto vlcModeIsEnabled = audioProcessor.isSurroundVariant()
-                               && vlcMode != nullptr
-                               && vlcMode->load() >= 0.5f;
+    const auto readChannelOrder = [this] (const char* parameterId)
+    {
+        const auto* value = audioProcessor.getParameterState().getRawParameterValue (parameterId);
+        return smart_ducking::sanitiseSurroundChannelOrder (
+            value != nullptr ? value->load() : 0.0f);
+    };
+    const std::array<int, 5> stereoMeterOrder { 0, 2, 1, 3, 4 };
+    const auto mainMeterOrder = audioProcessor.isSurroundVariant()
+        ? smart_ducking::getMeterChannelsForOrder (readChannelOrder (
+              smart_ducking::parameter_ids::mainChannelOrder))
+        : stereoMeterOrder;
+    const auto voiceMeterOrder = voiceChannels == 5
+        ? smart_ducking::getMeterChannelsForOrder (readChannelOrder (
+              smart_ducking::parameter_ids::voiceChannelOrder))
+        : stereoMeterOrder;
+    const auto outputMeterOrder = outputChannels == 5
+        ? smart_ducking::getMeterChannelsForOrder (readChannelOrder (
+              smart_ducking::parameter_ids::outputChannelOrder))
+        : stereoMeterOrder;
     auto mainInputMeter = leftMeters.removeFromLeft (leftHalf);
     mainInputMeterBounds = mainInputMeter;
 
@@ -2239,14 +2324,21 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
                      audioProcessor.isSurroundVariant() ? 5 : 2,
                      nullptr,
                      nullptr,
-                     vlcModeIsEnabled);
+                     mainMeterOrder,
+                     audioProcessor.isSurroundVariant());
     leftMeters.removeFromLeft (6.0f);
+    voiceInputMeterBounds = leftMeters;
     drawSignalMeter (graphics,
                      leftMeters,
                      "VOICE SC",
                      displayedVoicePeaks,
                      voiceColour,
-                     voiceChannels);
+                     voiceChannels,
+                     nullptr,
+                     nullptr,
+                     voiceMeterOrder,
+                     voiceChannels == 5);
+    outputMeterBounds = rightMeters;
     drawSignalMeter (graphics,
                      rightMeters,
                      "OUTPUT",
@@ -2255,7 +2347,8 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
                      outputChannels,
                      &displayedReductionDb,
                      &displayedSpectralDb,
-                     false);
+                     outputMeterOrder,
+                     outputChannels == 5);
 
     const auto lowerBounds = pagePanel.getBounds().toFloat();
     graphics.setColour (juce::Colours::black.withAlpha (0.08f));
@@ -2336,63 +2429,103 @@ void SmartDuckingAudioProcessorEditor::resized()
 
 void SmartDuckingAudioProcessorEditor::mouseDown (const juce::MouseEvent& event)
 {
-    if (! audioProcessor.isSurroundVariant()
-        || ! event.mods.isPopupMenu()
-        || ! mainInputMeterBounds.contains (event.position))
+    if (! event.mods.isLeftButtonDown())
         return;
 
-    auto* parameter = audioProcessor.getParameterState().getParameter (
-        smart_ducking::parameter_ids::vlcMode);
+    if (audioProcessor.isSurroundVariant()
+        && mainInputMeterBounds.contains (event.position))
+    {
+        showChannelOrderMenu (smart_ducking::parameter_ids::mainChannelOrder,
+                              "MAIN IN CHANNEL ORDER",
+                              mainInputMeterBounds,
+                              event.position);
+        return;
+    }
+
+    if (getVoiceSpatialChannelCount() == 5
+        && voiceInputMeterBounds.contains (event.position))
+    {
+        showChannelOrderMenu (smart_ducking::parameter_ids::voiceChannelOrder,
+                              "VOICE SC CHANNEL ORDER",
+                              voiceInputMeterBounds,
+                              event.position);
+        return;
+    }
+
+    if (audioProcessor.getOutputMeterChannelCount() == 5
+        && outputMeterBounds.contains (event.position))
+        showChannelOrderMenu (smart_ducking::parameter_ids::outputChannelOrder,
+                              "OUTPUT CHANNEL ORDER",
+                              outputMeterBounds,
+                              event.position);
+}
+
+void SmartDuckingAudioProcessorEditor::showChannelOrderMenu (
+    const char* parameterId,
+    const juce::String& title,
+    juce::Rectangle<float> targetBounds,
+    juce::Point<float> clickPosition)
+{
+    auto* parameter = audioProcessor.getParameterState().getParameter (parameterId);
 
     if (parameter == nullptr)
         return;
 
-    const auto vlcOrderIsEnabled = parameter->getValue() >= 0.5f;
+    const auto currentOrder = juce::jlimit (
+        0,
+        smart_ducking::surroundChannelOrderCount - 1,
+        juce::roundToInt (parameter->convertFrom0to1 (parameter->getValue())));
     juce::PopupMenu menu;
     menu.setLookAndFeel (onWaveLookAndFeel.get());
-    menu.addSectionHeader ("MAIN IN CHANNEL ORDER");
-    menu.addItem (1,
-                  "L R C Lfe Ls Rs",
-                  true,
-                  ! vlcOrderIsEnabled);
-    menu.addItem (2,
-                  "L R Ls Rs C Lfe",
-                  true,
-                  vlcOrderIsEnabled);
-    const auto clickArea = localAreaToGlobal (
-        juce::Rectangle<int> (event.getPosition().x,
-                              event.getPosition().y,
-                              1,
-                              1));
+    menu.addSectionHeader (title);
+
+    for (int order = 0; order < smart_ducking::surroundChannelOrderCount; ++order)
+        menu.addItem (
+            order + 1,
+            juce::String (smart_ducking::surroundChannelOrderNames[static_cast<size_t> (order)])
+                + "   ·   "
+                + smart_ducking::surroundChannelOrderPreviews[static_cast<size_t> (order)],
+            true,
+            order == currentOrder);
+
+    auto clickArea = juce::Rectangle<int> (0, 0, 2, 2);
+    clickArea.setCentre (juce::roundToInt (clickPosition.x),
+                         juce::roundToInt (clickPosition.y));
+    clickArea = localAreaToGlobal (clickArea);
     auto safeThis = juce::Component::SafePointer<SmartDuckingAudioProcessorEditor> (this);
+    const auto parameterIdString = juce::String (parameterId);
     menu.showMenuAsync (
         juce::PopupMenu::Options()
             .withTargetComponent (*this)
             .withTargetScreenArea (clickArea)
             .withPreferredPopupDirection (
-                juce::PopupMenu::Options::PopupDirection::upwards)
-            .withMinimumWidth (220)
+                juce::PopupMenu::Options::PopupDirection::downwards)
+            .withMinimumWidth (260)
             .withStandardItemHeight (30)
-            .withInitiallySelectedItem (vlcOrderIsEnabled ? 2 : 1)
+            .withInitiallySelectedItem (currentOrder + 1)
             .withParentComponent (this)
             .withDeletionCheck (*this),
-        [safeThis] (int result)
+        [safeThis, parameterIdString, targetBounds] (int result)
         {
-            if ((result != 1 && result != 2) || safeThis == nullptr)
+            if (result < 1
+                || result > smart_ducking::surroundChannelOrderCount
+                || safeThis == nullptr)
                 return;
 
-            if (auto* vlcParameter = safeThis->audioProcessor.getParameterState().getParameter (
-                    smart_ducking::parameter_ids::vlcMode))
+            if (auto* channelOrderParameter =
+                    safeThis->audioProcessor.getParameterState().getParameter (
+                        parameterIdString))
             {
-                const auto requestedValue = result == 2 ? 1.0f : 0.0f;
+                const auto requestedValue = channelOrderParameter->convertTo0to1 (
+                    static_cast<float> (result - 1));
 
-                if (std::abs (vlcParameter->getValue() - requestedValue) < 0.001f)
+                if (std::abs (channelOrderParameter->getValue() - requestedValue) < 0.001f)
                     return;
 
-                vlcParameter->beginChangeGesture();
-                vlcParameter->setValueNotifyingHost (requestedValue);
-                vlcParameter->endChangeGesture();
-                safeThis->repaint();
+                channelOrderParameter->beginChangeGesture();
+                channelOrderParameter->setValueNotifyingHost (requestedValue);
+                channelOrderParameter->endChangeGesture();
+                safeThis->repaint (targetBounds.expanded (2.0f).toNearestInt());
             }
         });
 }
@@ -2785,7 +2918,8 @@ void SmartDuckingAudioProcessorEditor::drawSignalMeter (
     int visibleChannels,
     const std::array<float, 5>* wideReductionValues,
     const std::array<float, 5>* spectralReductionValues,
-    bool highlightLabel)
+    std::array<int, 5> channelOrder,
+    bool menuAvailable)
 {
     drawCard (graphics, bounds, 9.0f);
     const auto showsReduction = wideReductionValues != nullptr
@@ -2810,9 +2944,9 @@ void SmartDuckingAudioProcessorEditor::drawSignalMeter (
     }
     else
     {
-        graphics.setColour (highlightLabel ? maskColour : secondaryTextColour);
+        graphics.setColour (secondaryTextColour);
         graphics.setFont (juce::FontOptions { 9.5f, juce::Font::bold });
-        graphics.drawFittedText (label,
+        graphics.drawFittedText (label + (menuAvailable ? "  \xE2\x96\xBE" : ""),
                                  title.toNearestInt(),
                                  juce::Justification::centred,
                                  1);
@@ -2828,7 +2962,7 @@ void SmartDuckingAudioProcessorEditor::drawSignalMeter (
 
     for (int row = 0; row < visibleChannels; ++row)
     {
-        const auto channel = meterValueIndexForRow (row, visibleChannels);
+        const auto channel = juce::jlimit (0, 4, channelOrder[static_cast<size_t> (row)]);
         const auto barPadding = visibleChannels >= 5 ? 1.0f : 2.0f;
         auto column = meterArea.removeFromLeft (barWidth).reduced (barPadding, 0.0f);
         meterColumns[static_cast<size_t> (row)] = column;
@@ -2853,7 +2987,7 @@ void SmartDuckingAudioProcessorEditor::drawSignalMeter (
     {
         graphics.setColour (secondaryTextColour);
         graphics.setFont (juce::FontOptions { 9.5f, juce::Font::bold });
-        graphics.drawFittedText (label,
+        graphics.drawFittedText (label + (menuAvailable ? "  \xE2\x96\xBE" : ""),
                                  footer.toNearestInt(),
                                  juce::Justification::centred,
                                  1);
@@ -2893,9 +3027,12 @@ void SmartDuckingAudioProcessorEditor::drawSignalMeter (
                  - 0.5f * groupWidth;
         };
 
-        for (int channel = 0; channel < reductionChannels; ++channel)
+        for (int row = 0; row < reductionChannels; ++row)
         {
-            const auto groupX = groupXForChannel (channel);
+            const auto channel = visibleChannels == 2
+                ? row
+                : juce::jlimit (0, 4, channelOrder[static_cast<size_t> (row)]);
+            const auto groupX = groupXForChannel (row);
             const auto drawReduction = [&graphics,
                                         &reductionArea,
                                         stripWidth] (float x,

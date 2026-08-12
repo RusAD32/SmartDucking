@@ -430,7 +430,9 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 | FFT Resolution | ×1 / ×2 / ×4 | ×2 | зафиксировано |
 | Processing Mode | QUALITY / NORMAL | NORMAL | реализовано, choice indices совместимы |
 | Voice Format | Stereo / Surround | Stereo | реализовано |
-| VLC Channel Order | Off / On | Off | только Surround Main |
+| Main Channel Order | ITU/SMPTE / REAPER/VLC / Film / DTS/MPEG-D | ITU/SMPTE | только Surround Main |
+| Voice Channel Order | ITU/SMPTE / REAPER/VLC / Film / DTS/MPEG-D | ITU/SMPTE | действует при Voice Surround |
+| Output Channel Order | ITU/SMPTE / REAPER/VLC / Film / DTS/MPEG-D | ITU/SMPTE | Surround output без Downmix |
 | Downmix | Off / On | Off | только Surround output |
 | Drop LFE | Off / On | Off | действует при Downmix |
 | Global Bypass | Off / On | Off | стандартный VST3 bypass, хранится в project state |
@@ -497,7 +499,9 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 
 Weight Frequency/Gain/Q редактируются одной parametric node: drag меняет frequency/gain, Shift-drag или wheel меняет Q, double-click возвращает defaults. `L/R LINK` — только инструмент ручного редактирования и не зеркалит host automation.
 
-В единой группе стадий bypass обозначен векторной иконкой. Crossover предлагает `Bypass / LOW / HIGH`; обе monitor-полосы комплементарны и исключают LFE. Wideband и Spectral предлагают `Bypass / S / Δ`, причём Delta возвращает удалённый сигнал своей стадии. Monitor Mode взаимо исключает режимы прослушивания. Рядом с фактическим индикатором heavy engine `SLEEP / ACTIVE` находится отдельный Global Bypass: стандартный VST3-параметр плавно переключает на raw Main, выровненный по полной PDC, и обходит также remapping/downmix/Drop LFE.
+В единой группе стадий bypass обозначен векторной иконкой. Crossover предлагает `Bypass / LOW / HIGH`: в QUALITY monitor-полосы берутся из выровненных по latency LR8-ветвей, а в NORMAL — из тех же комплементарных FFT-весов, которыми реально разделяется сигнал при обработке. Оба режима исключают LFE. Wideband и Spectral предлагают `Bypass / S / Δ`, причём Delta возвращает удалённый сигнал своей стадии. Monitor Mode взаимо исключает режимы прослушивания. Рядом с фактическим индикатором heavy engine `SLEEP / ACTIVE` находится отдельный Global Bypass: стандартный VST3-параметр обходит ducking и monitor paths, но сохраняет Main/Output remapping, Downmix и Drop LFE. После завершения fade тяжёлый DSP не вычисляется; при выходе wet path сначала прогревается на полную заявленную latency.
+
+Для Main, Voice Surround и Output без Downmix доступны порядки ITU/SMPTE, REAPER/VLC, Film и DTS/MPEG-D. Меню открываются левой кнопкой на соответствующем meter и имеют видимый индикатор; столбцы и подписи meter следуют выбранному физическому порядку.
 
 Кнопки `A / B` хранят два parameter snapshot в project state, не меняя Global Bypass. Host program list содержит `Default`, `Gentle Dialogue`, `Voice Focus` и `Fast Announcer`. Выбранная Dynamics/Routing page и matrix-link также сохраняются.
 

@@ -104,16 +104,18 @@ Every STFT frame advances the same WOLA state and therefore keeps PDC and audibl
 
 ## Stage routing and monitoring
 
-Three boolean host parameters bypass Crossover, Wideband, and Spectral independently. One choice parameter represents mutually exclusive Crossover Low/High, Wideband Solo/Delta, and Spectral Solo/Delta monitoring. Crossover Low/High use the delayed complementary LR8 branches in QUALITY and complementary FFT-domain curves in NORMAL; both omit LFE. Wideband and Spectral Delta subtract the selected wet result from an STFT-aligned dry Main path. Stage and monitor gains use 30 ms ramps, while all paths retain the configured STFT plus Lookahead-reserve latency.
+Three boolean host parameters bypass Crossover, Wideband, and Spectral independently. One choice parameter represents mutually exclusive Crossover Low/High, Wideband Solo/Delta, and Spectral Solo/Delta monitoring. Crossover Low/High use delayed complementary LR8 branches in QUALITY. In NORMAL they run through the already warm WOLA path and apply the exact complementary FFT crossover weights used by NORMAL processing, so monitoring matches its phase and transient response instead of substituting LR8. Both omit LFE and support live switching. Wideband and Spectral Delta subtract the selected wet result from an STFT-aligned dry Main path. Stage and monitor gains use 30 ms ramps, while all paths retain the configured STFT plus Lookahead-reserve latency.
 
-A separate boolean is returned through JUCE's `getBypassParameter()` as the standard VST3 bypass control. It uses a 30 ms crossfade to the raw Main input delayed by the fixed Lookahead reserve and current STFT latency. This path intentionally bypasses VLC remapping, downmix, Drop LFE, all processing stages, and monitor modes while preserving the declared PDC. The wet engine continues advancing so bypass can be left without stale state. Global bypass is stored in project state but is excluded from factory-program and A/B snapshot recall.
+A separate boolean is returned through JUCE's `getBypassParameter()` as the standard VST3 bypass control. It uses a 30 ms crossfade around all ducking stages and monitor modes while preserving the declared PDC. Main input remapping, forced downmix/Drop LFE, and surround output remapping remain active. Once the fade reaches bypass, the crossover, sidechain lookahead/detector, FFT/PCE, matrix, and monitor paths stop advancing; only the fixed latency and requested routing/downmix path runs. Leaving bypass runs that wet path silently for one full reported-latency interval before the 30 ms fade back, avoiding stale DSP output. Global bypass is stored in project state but is excluded from factory-program and A/B snapshot recall.
 
 The spectral engine publishes its real heavy-path state through a lock-free atomic. It remains ACTIVE through detector hold, release, mask decay, and overlap-add tail, and becomes SLEEP only when the existing dry WOLA fast path is actually selected. GUI polling does not wake the engine.
 
 Display frames and the analyser use the same fixed logarithmic 20 Hz–20 kHz frequency grid. At sample rates below 40 kHz, display bins above Nyquist remain empty while the visible axis still reaches 20 kHz. Weight Frequency uses the same 20 kHz upper limit, so its interactive curve cannot stop short of the displayed spectrum.
 
-Voice Stereo/Surround interpretation, standard/VLC Main order, forced downmix,
-and Drop LFE use 30 ms sample ramps. The selected Dynamics/Routing page and matrix-link
+Voice Stereo/Surround interpretation, four-choice Main/Voice/Output channel order,
+forced downmix, and Drop LFE use 30 ms sample ramps. The orders are ITU/SMPTE,
+REAPER/VLC, Film, and DTS/MPEG-D. Left-click menus are available on applicable meters,
+whose displayed columns follow the physical order. The selected Dynamics/Routing page and matrix-link
 choice are stored as non-automatable APVTS root properties. Legacy Simple/Advanced
 state migrates to Dynamics, except the old Routing page which remains Routing. The Output meter
 exposes five spatial channels for normal Surround output and only L/R while

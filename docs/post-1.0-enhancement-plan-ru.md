@@ -653,6 +653,44 @@ parameter отсутствует. Новый default для новых экзе�
 
 Перед фиксацией layout обязательны state migration и automation tests.
 
+### 10.3 Независимые временные параметры Wideband и Spectral
+
+После стабилизации основного make-space алгоритма общие временные параметры
+нужно разделить на два набора:
+
+- `Wideband Attack / Hold / Release / Lookahead`;
+- `Spectral Attack / Hold / Release / Lookahead`.
+
+Это разделение должно позволять независимо настраивать реакцию обычной и
+спектральной динамики: например, быстро освобождать спектральное место для
+Voice, но сохранять более плавное широкополосное приглушение. Оба набора
+остаются host-visible и автоматизируемыми.
+
+Рядом с ними нужен опциональный `Link` одноимённых параметров. При включённом
+link изменение Attack меняет оба Attack, изменение Hold — оба Hold и так далее;
+связь между разными типами параметров не создаётся. При выключении link каждый
+набор редактируется независимо и сохраняет последние связанные значения как
+начальную точку.
+
+Контракт совместимости:
+
+- старые states с одним набором времени загружают эти значения одновременно в
+  Wideband и Spectral и включают link;
+- новый экземпляр по умолчанию также стартует с link, сохраняя поведение и
+  простоту настройки версии 1.0;
+- link является UI/parameter-edit contract и не должен в audio thread постоянно
+  перезаписывать автоматизацию одного набора значениями другого;
+- независимые Lookahead не должны добавлять два последовательных delay:
+  reported PDC определяется максимальным активным Lookahead, а более короткий
+  контур получает соответствующее внутреннее выравнивание;
+- диапазоны Lookahead должны оставаться внутри утверждённого latency reserve,
+  либо изменение этого резерва принимается отдельным решением с PDC, state и
+  automation tests.
+
+Перед публичным включением обязательны тесты загрузки старых states,
+link/unlink, автоматизации обоих наборов, latency alignment и отсутствие
+двойного audible envelope при одновременной работе Wideband и Spectral.
+
 ## 11. Realtime, CPU, memory и latency
 
 Новый алгоритм обязан:
@@ -738,11 +776,14 @@ Stereo/Surround и GUI open/closed. Относительное увеличен�
 
 1. Выбрать финальную strategy и defaults.
 2. Утвердить минимальный parameter schema.
-3. Реализовать state migration.
-4. Обновить Simple/Advanced UI без перегрузки controls.
-5. Обновить analyzer visualization для perceptual mask.
-6. Добавить понятные tooltips: make-space не ищет оригинального актёра.
-7. Обновить README, architecture, handoff и technical spec.
+3. Разделить Attack/Hold/Release/Lookahead на Wideband и Spectral и добавить
+   опциональный link по правилам раздела 10.3.
+4. Реализовать state migration, включая перенос общего набора времени 1.0 в
+   оба новых набора с включённым link.
+5. Обновить Simple/Advanced UI без перегрузки controls.
+6. Обновить analyzer visualization для perceptual mask.
+7. Добавить понятные tooltips: make-space не ищет оригинального актёра.
+8. Обновить README, architecture, handoff и technical spec.
 
 ### Phase 6 — stabilization
 

@@ -4,7 +4,7 @@
 
 Дата актуализации: 13 августа 2026 года.
 
-Прогресс: этап A реализован 10 августа 2026 года, ручной smoke-test сборки в REAPER пройден пользователем 12 августа. Этап B реализован 12 августа и уточнён 13 августа: добавлены независимые stage bypass, взаимно исключающий Monitor Mode, сглаженные paths с постоянной PDC, комплементарные `LOW / HIGH` для Crossover без LFE, фактический индикатор `SLEEP / ACTIVE` и стандартный Global Bypass с latency-aligned raw Main path. Этап C реализован 12 августа 2026 года: weighting перенесён на интерактивную ноду, пять конечных matrix controls сглаживаются на частоте STFT, добавлен ручной `L/R LINK`, routing-aware Output meter, сохранение UI-state и короткие переходы Voice/VLC/Downmix/LFE.
+Прогресс: этап A реализован 10 августа 2026 года, ручной smoke-test сборки в REAPER пройден пользователем 12 августа. Этап B реализован 12 августа и уточнён 13 августа: добавлены независимые stage bypass, взаимно исключающий Monitor Mode, сглаженные paths с постоянной PDC, комплементарные `LOW / HIGH` для Crossover без LFE, фактический индикатор `SLEEP / ACTIVE` и стандартный Global Bypass. LOW/HIGH используют latency-aligned LR8-ветви в QUALITY и реальные комплементарные FFT-веса обработки в NORMAL. Global Bypass сохраняет channel-order routing и Downmix/Drop LFE, а после fade останавливает тяжёлый DSP и прогревает wet path перед возвратом. Этап C реализован 12 августа 2026 года: weighting перенесён на интерактивную ноду, пять конечных matrix controls сглаживаются на частоте STFT, добавлен ручной `L/R LINK`, routing-aware Output meter, сохранение UI-state и короткие переходы Voice/channel-order/Downmix/LFE.
 
 Этап D завершён 12 августа: расширены processor/factory tests, добавлены pluginval/CI и CPU benchmark, вынесены PCE history и frame smoothers, удалён dead UI code, реализованы factory presets и persistent A/B, синхронизирована документация.
 
@@ -41,7 +41,7 @@
 - фиксированные конфигурации шин `2 + 6 + 2` и `6 + 6 + 6`;
 - общий DSP, состояние и редактор обоих классов;
 - ручной выбор Voice Stereo/Surround;
-- стандартный порядок 5.1 `L R C LFE Ls Rs` и VLC Main mode `L R Ls Rs C LFE`;
+- ITU/SMPTE, REAPER/VLC, Film и DTS/MPEG-D channel order для Main, Voice Surround и Output без Downmix;
 - принудительный stereo downmix и опциональный Drop LFE;
 - LR8 crossover и защищённая низкая полоса;
 - stereo-to-LCR Phantom Center Extraction для Main и Voice;
@@ -157,7 +157,7 @@ Symmetry Link является инструментом редактирован
 7. Сохранять фиксированную Lookahead-часть PDC при любой FFT-конфигурации.
 8. Добавить проверки многократного переключения, разных block sizes и остановки/возобновления REAPER.
 
-Voice Format, VLC order, Downmix и Drop LFE не меняют FFT size, но их мгновенное переключение также не должно создавать щелчок. Для них нужен короткий crossfade или применение при остановленном playback, в зависимости от результата прослушивания.
+Voice Format, Main/Voice/Output order, Downmix и Drop LFE не меняют FFT size, но их мгновенное переключение также не должно создавать щелчок. Для них нужен короткий crossfade или применение при остановленном playback, в зависимости от результата прослушивания.
 
 ## 5. Сглаживание матрицы
 
@@ -220,7 +220,7 @@ Voice Format, VLC order, Downmix и Drop LFE не меняют FFT size, но и
 
 Так host automation не сможет создать неоднозначную комбинацию нескольких Solo/Delta, а UI по-прежнему будет выглядеть как три группы кнопок.
 
-В режиме QUALITY Crossover LOW/HIGH используют существующие delayed LR8 branches. В режиме NORMAL обе полосы строятся complementary FFT-domain crossover, чтобы мониторинг соответствовал реально используемой кривой. Global Bypass плавно переключается на raw Main, задержанный на фиксированный Lookahead reserve и текущую STFT latency; он обходит также VLC mapping, downmix и Drop LFE, сохраняется в project state, но не входит в factory preset и A/B recall.
+В QUALITY Crossover LOW/HIGH используют delayed LR8 branches. В NORMAL они используют прогретый WOLA path и те же комплементарные FFT-веса, что и реальная обработка; это сохраняет её фазу и реакцию на транзиенты при live switch. Global Bypass плавно обходит processing и monitor paths, сохраняя Main/Output mapping, Downmix и Drop LFE. После fade тяжёлый DSP останавливается; при выходе он прогревается на полную PDC до fade обратно. Параметр сохраняется в project state, но не входит в factory preset и A/B recall.
 
 ## 7. SLEEP/ACTIVE и диагностическая индикация
 
@@ -306,7 +306,7 @@ Presets и A/B выполняются после удаления legacy-пар�
 - отсутствие пропуска начала первой фонемы после SLEEP;
 - Bypass/Solo/Delta каждой стадии;
 - Crossover LOW/HIGH как комплементарные monitor-полосы без LFE;
-- Global Bypass как стандартный host-параметр, плавный exact-latency dry path и обход output routing;
+- Global Bypass как стандартный host-параметр с постоянной PDC, сохранением routing/downmix и остановкой тяжёлого DSP;
 - матричное сглаживание и maximum-агрегация;
 - L/R Symmetry mappings для 3×3, 3×5, 5×3 и 5×5;
 - сохранение/восстановление новых параметров и UI-state;
@@ -355,7 +355,7 @@ pluginval подключается только как dev/CI-инструмен
 - Stereo Main + Surround Voice;
 - Surround Main + Stereo Voice;
 - Surround Main + Surround Voice;
-- standard и VLC channel order;
+- четыре channel order для Main, Voice Surround и Output без Downmix;
 - Downmix с LFE и Drop LFE;
 - QUALITY/NORMAL и ×1/×2/×4;
 - SLEEP → первая реплика → hold/release → SLEEP;
@@ -412,7 +412,7 @@ pluginval подключается только как dev/CI-инструмен
 4. [x] Добавить L/R Symmetry Link.
 5. [x] Исправить Output meters при Surround Downmix.
 6. [x] Сохранить UI mode/page/link state.
-7. [x] Сгладить Voice Format, VLC, Downmix и Drop LFE.
+7. [x] Сгладить Voice Format, Main/Voice/Output order, Downmix и Drop LFE.
 
 ### Этап D — укрепление проекта — реализовано
 

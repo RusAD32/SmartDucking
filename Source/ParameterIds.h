@@ -19,7 +19,11 @@ inline constexpr auto fftResolution = "fftResolution";
 inline constexpr auto processingMode = "processingMode";
 inline constexpr auto mainFormat = "mainFormat";
 inline constexpr auto voiceFormat = "voiceFormat";
-inline constexpr auto vlcMode = "vlcMode";
+// Keep the original boolean parameter ID: its saved raw value 0/1 maps directly
+// to ITU/SMPTE or REAPER/VLC in the expanded choice parameter.
+inline constexpr auto mainChannelOrder = "vlcMode";
+inline constexpr auto voiceChannelOrder = "voiceChannelOrder";
+inline constexpr auto outputChannelOrder = "outputChannelOrder";
 inline constexpr auto downmix = "downmix";
 inline constexpr auto dropLfe = "dropLfe";
 inline constexpr auto globalBypass = "globalBypass";

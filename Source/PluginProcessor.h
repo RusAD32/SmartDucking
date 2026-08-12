@@ -13,6 +13,7 @@
 #include "PluginVariant.h"
 #include "SidechainEnvelope.h"
 #include "SpectralSuppressor.h"
+#include "SurroundChannelOrder.h"
 
 namespace smart_ducking
 {
@@ -26,6 +27,87 @@ enum class MonitorMode
     spectralSolo,
     spectralDelta
 };
+
+struct ChannelOrderMix
+{
+    SurroundChannelOrder from = SurroundChannelOrder::ituSmpte;
+    SurroundChannelOrder to = SurroundChannelOrder::ituSmpte;
+    float mix = 1.0f;
+};
+
+class SmoothedChannelOrder
+{
+public:
+    void prepare (double sampleRate, SurroundChannelOrder initialOrder) noexcept
+    {
+        from = initialOrder;
+        to = initialOrder;
+        transition.reset (sampleRate, 0.030);
+        transition.setCurrentAndTargetValue (1.0f);
+    }
+
+    void setTarget (SurroundChannelOrder requestedOrder) noexcept
+    {
+        if (requestedOrder == to)
+            return;
+
+        from = transition.getCurrentValue() < 0.5f ? from : to;
+        to = requestedOrder;
+        transition.setCurrentAndTargetValue (0.0f);
+        transition.setTargetValue (1.0f);
+    }
+
+    [[nodiscard]] ChannelOrderMix getNext() noexcept
+    {
+        const auto mix = transition.getNextValue();
+
+        if (! transition.isSmoothing() && mix >= 1.0f)
+            from = to;
+
+        return { from, to, mix };
+    }
+
+private:
+    SurroundChannelOrder from = SurroundChannelOrder::ituSmpte;
+    SurroundChannelOrder to = SurroundChannelOrder::ituSmpte;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> transition;
+};
+
+inline std::array<float, 6> applySurroundInputOrder (
+    const std::array<float, 6>& physical,
+    const ChannelOrderMix& order) noexcept
+{
+    const auto from = mapSurroundInputToCanonical (physical, order.from);
+
+    if (order.from == order.to || order.mix >= 1.0f)
+        return order.from == order.to ? from
+                                      : mapSurroundInputToCanonical (physical, order.to);
+
+    const auto to = mapSurroundInputToCanonical (physical, order.to);
+    std::array<float, 6> result {};
+    for (size_t channel = 0; channel < result.size(); ++channel)
+        result[channel] = from[channel] + order.mix * (to[channel] - from[channel]);
+
+    return result;
+}
+
+inline std::array<float, 6> applySurroundOutputOrder (
+    const std::array<float, 6>& canonical,
+    const ChannelOrderMix& order) noexcept
+{
+    const auto from = mapSurroundOutputFromCanonical (canonical, order.from);
+
+    if (order.from == order.to || order.mix >= 1.0f)
+        return order.from == order.to ? from
+                                      : mapSurroundOutputFromCanonical (canonical, order.to);
+
+    const auto to = mapSurroundOutputFromCanonical (canonical, order.to);
+    std::array<float, 6> result {};
+    for (size_t channel = 0; channel < result.size(); ++channel)
+        result[channel] = from[channel] + order.mix * (to[channel] - from[channel]);
+
+    return result;
+}
 
 } // namespace smart_ducking
 
@@ -72,7 +154,20 @@ public:
     }
     [[nodiscard]] bool isHeavyPathActive() const noexcept
     {
-        return spectralLcrProcessor.isHeavyPathActive();
+        return ! globalBypassDspSleeping.load (std::memory_order_relaxed)
+            && spectralLcrProcessor.isHeavyPathActive();
+    }
+    [[nodiscard]] bool isGlobalBypassDspSleeping() const noexcept
+    {
+        return globalBypassDspSleeping.load (std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint64_t getProcessedFftFrameCount() const noexcept
+    {
+        return spectralLcrProcessor.getProcessedFftFrameCount();
+    }
+    [[nodiscard]] std::uint64_t getProcessedSidechainFftCount() const noexcept
+    {
+        return spectralLcrProcessor.getProcessedSidechainFftCount();
     }
     [[nodiscard]] int getOutputMeterChannelCount() const noexcept
     {
@@ -342,6 +437,18 @@ private:
     void initialiseComparisonSlots();
     [[nodiscard]] bool isGlobalBypassParameter (
         const juce::AudioProcessorParameter*) const noexcept;
+    void processSteadyGlobalBypass (juce::AudioBuffer<float>& mainInput,
+                                    juce::AudioBuffer<float>& output,
+                                    bool visualisationActive) noexcept;
+
+    enum class GlobalBypassState
+    {
+        active,
+        fadingToBypass,
+        bypassed,
+        warmingWet,
+        fadingToWet
+    };
 
     const smart_ducking::PluginVariant variant;
     juce::AudioProcessorValueTreeState parameters;
@@ -361,7 +468,9 @@ private:
     std::atomic<float>* fftResolutionParameter = nullptr;
     std::atomic<float>* processingModeParameter = nullptr;
     std::atomic<float>* voiceFormatParameter = nullptr;
-    std::atomic<float>* vlcModeParameter = nullptr;
+    std::atomic<float>* mainChannelOrderParameter = nullptr;
+    std::atomic<float>* voiceChannelOrderParameter = nullptr;
+    std::atomic<float>* outputChannelOrderParameter = nullptr;
     std::atomic<float>* downmixParameter = nullptr;
     std::atomic<float>* dropLfeParameter = nullptr;
     std::atomic<float>* globalBypassParameter = nullptr;
@@ -378,6 +487,7 @@ private:
     smart_ducking::LinkwitzRiley8Crossover crossover;
     smart_ducking::StereoSpectralLcrProcessor spectralLcrProcessor;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> lowBandDelay;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> highBandDelay;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
         mainLookaheadDelay;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
@@ -402,8 +512,9 @@ private:
         smoothedGlobalBypassMix;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
         smoothedVoiceSurroundMix;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
-        smoothedVlcOrderMix;
+    smart_ducking::SmoothedChannelOrder smoothedMainChannelOrder;
+    smart_ducking::SmoothedChannelOrder smoothedVoiceChannelOrder;
+    smart_ducking::SmoothedChannelOrder smoothedOutputChannelOrder;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
         smoothedDownmixMix;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
@@ -414,11 +525,16 @@ private:
     std::atomic<bool> transportIsPlaying { false };
     std::atomic<bool> transportStateKnown { true };
     std::atomic<bool> processorPrepared { false };
+    std::atomic<bool> globalBypassDspSleeping { false };
     std::atomic<std::uint64_t> processBlockCounter { 0 };
     std::uint64_t lastTimerProcessBlockCounter = 0;
     int consecutiveQuiescentTimerTicks = 0;
     double currentSampleRate = 48000.0;
     int maximumLookaheadSamples = 0;
+    int globalBypassWarmupSamplesRemaining = 0;
+    int crossoverWarmupSamplesRemaining = 0;
+    bool crossoverPathSleeping = false;
+    GlobalBypassState globalBypassState = GlobalBypassState::active;
 
     std::atomic<float> mainInputPeakLeft { 0.0f };
     std::atomic<float> mainInputPeakRight { 0.0f };

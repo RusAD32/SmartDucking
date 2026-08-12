@@ -2,9 +2,11 @@
 
 Smart Ducking is an OnWave VST3 for voice-aware spatial and spectral ducking in voice-over mixing.
 
-The `1.0.0` release exposes two audio-module classes from one `Smart Ducking.vst3` bundle. `Smart Ducking (Stereo)` has fixed `2 + 6 + 2` buses; `Smart Ducking (Surround)` has fixed `6 + 6 + 6` buses. Both classes use the same processor, DSP, state, and editor sources. Main format follows the selected class, while Voice can be interpreted as Stereo or 5.1 in either class. Stereo sources are decomposed into energy-normalised L/C/R above the Linkwitz–Riley 8th-order crossover; 5.1 sources use direct L/C/R/Ls/Rs components. The Voice components independently control corresponding Variant-A spectral masks, while the adjustable 5×5 matrix calculates spatial wideband gains. LFE is excluded from detection and processing and remains latency-aligned.
+Current status: **`1.0.0-rc.1` release candidate**, not the final `1.0.0` release.
 
-The custom editor keeps Main/Voice and wideband/spectral Gain Reduction meters visible above two direct pages: `DYNAMICS` and `ROUTING`. Dynamics contains every rotary dynamics/spectral control plus FFT Resolution and Processing Mode; Routing contains the spatial matrix. An icon-only bypass control plus two monitor controls are shown for each stage: Crossover uses `Bypass / LOW / HIGH`, while Wideband and Spectral use `Bypass / S / Δ`. The host sees three independent stage-bypass parameters and one mutually exclusive Monitor Mode choice. Both crossover monitors exclude LFE; Wideband and Spectral Delta return only their removed signal. A separate standard VST3 global bypass sits beside the actual heavy-engine `SLEEP / ACTIVE` status and crossfades to a latency-aligned raw Main path, bypassing DSP and output routing without changing PDC. The header also provides persistent `A / B` comparison slots; presets and A/B do not change global bypass. Meter rows follow the active routing: stereo inputs show L/R, Stereo-class reduction shows its internal L/C/R components, Surround routing shows L/C/R/Ls/Rs, and forced downmix changes Output to L/R. Voice format is the only format selector. The Surround class additionally exposes forced stereo downmix and optional LFE removal in its header, while VLC Main channel order is available from the Main meter menu; these controls are hidden in the Stereo class. The matrix presents Voice rows and Original columns as shared table headers and dynamically displays only the active 3×3, 3×5, 5×3, or 5×5 set of linear percentage sliders. Its `L/R LINK` editing tool mirrors manual changes spatially without rewriting host automation. Weight Frequency/Gain/Q are edited as one analyser node using drag, Shift-drag or wheel, and double-click reset. The analyser spans 20 Hz–20 kHz; Weight Frequency reaches 20 kHz, while Weight Gain spans `−12…+12 dB` around a centred zero line so negative weighting can de-emphasise a detector region. The selected page, link state, and both A/B parameter snapshots survive editor recreation and project-state round trips. The host program list contains `Default`, `Gentle Dialogue`, `Voice Focus`, and `Fast Announcer` starting points.
+The `1.0.0` candidate exposes two audio-module classes from one `Smart Ducking.vst3` bundle. `Smart Ducking (Stereo)` has fixed `2 + 6 + 2` buses; `Smart Ducking (Surround)` has fixed `6 + 6 + 6` buses. Both classes use the same processor, DSP, state, and editor sources. Main format follows the selected class, while Voice can be interpreted as Stereo or 5.1 in either class. Stereo sources are decomposed into energy-normalised L/C/R above the Linkwitz–Riley 8th-order crossover; 5.1 sources use direct L/C/R/Ls/Rs components. The Voice components independently control corresponding Variant-A spectral masks, while the adjustable 5×5 matrix calculates spatial wideband gains. LFE is excluded from detection and processing and remains latency-aligned.
+
+The custom editor keeps Main/Voice and wideband/spectral Gain Reduction meters visible above two direct pages: `DYNAMICS` and `ROUTING`. Dynamics contains every rotary dynamics/spectral control plus FFT Resolution and Processing Mode; Routing contains the spatial matrix. An icon-only bypass control plus two monitor controls are shown for each stage: Crossover uses `Bypass / LOW / HIGH`, while Wideband and Spectral use `Bypass / S / Δ`. The host sees three independent stage-bypass parameters and one mutually exclusive Monitor Mode choice. Crossover monitoring uses the latency-aligned LR8 branches in `QUALITY` and the exact complementary FFT crossover weights used by processing in `NORMAL`; both modes exclude LFE and support live switching. Wideband and Spectral Delta return only their removed signal. A separate standard VST3 global bypass sits beside the actual heavy-engine `SLEEP / ACTIVE` status. It crossfades past ducking and monitoring without changing PDC, retains configured Main/Output channel-order routing and Downmix/Drop LFE, then suspends the crossover, detector, FFT, PCE, and matrix path. Leaving bypass first warms the latency-aligned wet path before fading it in. The header also provides persistent `A / B` comparison slots; presets and A/B do not change global bypass. Meter rows follow the active routing: stereo inputs show L/R, Stereo-class reduction shows its internal L/C/R components, Surround routing shows L/C/R/Ls/Rs, and forced downmix changes Output to L/R. Left-click channel-order menus are indicated on surround Main, surround Voice, and non-downmixed surround Output meters; their meter columns and labels follow the selected physical order. The matrix presents Voice rows and Original columns as shared table headers and dynamically displays only the active 3×3, 3×5, 5×3, or 5×5 set of linear percentage sliders. Its `L/R LINK` editing tool mirrors manual changes spatially without rewriting host automation. Weight Frequency/Gain/Q are edited as one analyser node using drag, Shift-drag or wheel, and double-click reset. The analyser spans 20 Hz–20 kHz; Weight Frequency reaches 20 kHz, while Weight Gain spans `−12…+12 dB` around a centred zero line so negative weighting can de-emphasise a detector region. The selected page, link state, channel orders, and both A/B parameter snapshots survive editor recreation and project-state round trips. The host program list contains `Default`, `Gentle Dialogue`, `Voice Focus`, and `Fast Announcer` starting points.
 
 Lookahead is adjustable from 0 to 50 ms with a 10 ms default. Main reserves the full 50 ms while Voice is delayed by `50 ms - Lookahead`, so the reported latency remains `STFT latency + 50 ms` for every Lookahead value. A finite two-second tail is reported to the host so delayed STFT/crossover/overlap-add output is not truncated after input silence. `NORMAL` is the default Processing Mode for new instances. FFT Resolution and Processing Mode changes are queued during playback and applied only through a safe stopped/prepare configuration path instead of resetting DSP state in the audio callback.
 
@@ -119,7 +121,16 @@ Input bus 1: Voice Sidechain  5.1 physical bus, required
 Output bus 0: Output          5.1 physical bus, required
 ```
 
-The Voice physical bus is always 5.1. Voice Stereo mode uses its physical L/R and ignores the remaining sidechain pins. Standard 5.1 order is `L R C LFE Ls Rs`; Surround Main can instead use VLC order `L R Ls Rs C LFE`. Surround output is always standard order. Its forced stereo downmix writes L/R and clears C/LFE/Ls/Rs:
+The Voice physical bus is always 5.1. Voice Stereo mode uses its physical L/R and ignores the remaining sidechain pins. When a bus is interpreted as surround, its available channel orders are:
+
+| Preset | Physical channel sequence |
+| --- | --- |
+| ITU / SMPTE | `L R C LFE Ls Rs` |
+| REAPER / VLC | `L R Ls Rs C LFE` |
+| Film | `L C R Ls Rs LFE` |
+| DTS / MPEG-D | `C L R Ls Rs LFE` |
+
+Main order is available in the Surround class, Voice order is available when Voice Format is Surround, and Output order is available when surround output is not downmixed. Forced stereo downmix writes L/R and clears C/LFE/Ls/Rs:
 
 ```text
 Lout = L + 0.707 C + 0.707 Ls + 0.5 LFE
@@ -150,7 +161,7 @@ Rout = R + 0.707 C + 0.707 Rs + 0.5 LFE
 - [x] Exact energy-normalised LCR-to-stereo reconstruction
 - [x] Stable sidechain silence/one-sided/dual-mono/stereo classifier and extraction fast paths
 - [x] Adjustable 5×5 wideband ducking matrix with maximum aggregation
-- [x] Standard and VLC Main 5.1 input orders
+- [x] ITU/SMPTE, REAPER/VLC, Film, and DTS/MPEG-D orders for surround Main, Voice, and Output
 - [x] Forced stereo downmix with optional Drop LFE
 - [x] Adjustable Lookahead with a fixed 50 ms PDC reserve
 - [x] Safe stopped/prepare application of FFT Resolution and Processing Mode
@@ -158,13 +169,13 @@ Rout = R + 0.707 C + 0.707 Rs + 0.5 LFE
 - [x] Obsolete Sidechain Pre-Gain removed with legacy-state migration
 - [x] Direct Dynamics / Routing interface without duplicated Simple/Advanced controls
 - [x] Crossover `LOW / HIGH` monitoring and Wideband/Spectral Solo/Delta with smoothed transitions and constant PDC
-- [x] Standard VST3 global bypass with a smoothed latency-aligned raw Main path
+- [x] Standard VST3 global bypass preserving routing/downmix and suspending the heavy DSP path
 - [x] Lock-free heavy-engine `SLEEP / ACTIVE` status in the editor
 - [x] Interactive analyser weighting node with no duplicate rotary controls
 - [x] Frame-rate smoothing of the five final maximum-aggregated matrix controls
 - [x] Manual-only L/R symmetry link for matrix editing
 - [x] Routing-aware Output meters and persistent editor mode/page/link state
-- [x] Smoothed Voice format, VLC order, downmix, and Drop LFE routing changes
+- [x] Smoothed Voice format, Main/Voice/Output order, downmix, and Drop LFE routing changes
 - [x] Four factory starting-point presets and persistent A/B comparison
 - [x] Extracted PCE history and spectral-frame smoothing components with characterization tests
 - [x] Extended processor/factory coverage, variable-block equivalence, and CPU benchmark target

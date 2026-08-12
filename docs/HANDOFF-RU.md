@@ -83,19 +83,16 @@ Main format определяется выбранным plugin class и не я�
 - Stereo — используются только физические L/R;
 - Surround — используются L/R/C/Ls/Rs, LFE игнорируется.
 
-Стандартный порядок 5.1:
+Для Main, Voice Surround и Output без Downmix доступны четыре порядка 5.1:
 
 ```text
-L R C LFE Ls Rs
+ITU / SMPTE   L R C LFE Ls Rs
+REAPER / VLC  L R Ls Rs C LFE
+Film          L C R Ls Rs LFE
+DTS / MPEG-D  C L R Ls Rs LFE
 ```
 
-VLC Main mode:
-
-```text
-L R Ls Rs C LFE
-```
-
-Surround output всегда возвращается в стандартном порядке. Forced downmix:
+Forced downmix:
 
 ```text
 Lout = L + 0.707 C + 0.707 Ls + 0.5 LFE
@@ -329,22 +326,20 @@ Lookahead является активным параметром 0–50 ms. Он
 
 - resizable editor;
 - глобальные Main/Voice/Output meters и Wide/Spectral GR;
-- Simple с Duck Depth, Spectral Depth, Threshold, Attack, Hold, Release;
-- Advanced/Dynamics;
-- Advanced/Spectrum;
-- Advanced/Routing;
+- две прямые страницы Dynamics и Routing;
 - интерактивные Crossover, Spectral Low и Spectral High markers на spectrum;
 - динамическая матрица 3×3, 3×5, 5×3 или 5×5;
-- VLC mode доступен из меню Main meter;
+- order menu открывается левой кнопкой на Main, Voice Surround и Output без Downmix meter;
+- столбцы и подписи meter следуют выбранному физическому порядку каналов;
 - Downmix/Drop LFE видны только в Surround class.
 
-Lookahead находится в Dynamics. Единая группа стадий использует иконку bypass, `LOW / HIGH` для Crossover и `S / Δ` для Wideband/Spectral. Рядом с фактическим индикатором `SLEEP / ACTIVE` находится стандартный VST3 Global Bypass с latency-aligned dry path. Stage C также завершён:
+Lookahead находится в Dynamics. Единая группа стадий использует иконку bypass, `LOW / HIGH` для Crossover и `S / Δ` для Wideband/Spectral. LOW/HIGH в QUALITY берутся из latency-aligned LR8-ветвей; в NORMAL применяются те же комплементарные FFT-веса, что и в реальной обработке, поэтому совпадают также фаза и реакция на транзиенты. Рядом с фактическим индикатором `SLEEP / ACTIVE` находится стандартный VST3 Global Bypass: он сохраняет channel-order routing и Downmix/Drop LFE, после fade останавливает тяжёлый DSP и прогревает wet path перед выходом. Stage C также завершён:
 
 - weighting EQ редактируется одной draggable parametric node без дублирующих rotary controls;
 - `L/R LINK` пространственно отражает только ручные изменения матрицы;
 - Output meter показывает только L/R при forced downmix;
-- Simple/Advanced, выбранная Advanced page и link сохраняются как UI-state;
-- Voice Format, VLC order, Downmix и Drop LFE используют короткие переходы.
+- выбранная Dynamics/Routing page и link сохраняются как UI-state;
+- Voice Format, три channel order, Downmix и Drop LFE используют короткие переходы.
 - кнопки `A / B` в header автоматически сохраняют покидаемый snapshot и восстанавливают выбранный; оба snapshot входят в project state;
 - host program list содержит `Default`, `Gentle Dialogue`, `Voice Focus` и `Fast Announcer`.
 
@@ -470,7 +465,7 @@ Universal macOS bundle, ad-hoc code signing, unit/factory tests и pluginval str
 - strictness 10 как необязательная расширенная/nightly проверка;
 - playback, seek, loop и offline render;
 - все четыре комбинации Main/Voice Stereo/Surround;
-- standard/VLC order;
+- ITU/SMPTE, REAPER/VLC, Film и DTS/MPEG-D для Main/Voice/Output;
 - Downmix/Drop LFE;
 - QUALITY/NORMAL и ×1/×2/×4;
 - GUI open/closed CPU comparison.
