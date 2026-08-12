@@ -80,6 +80,7 @@ target_sources(SmartDucking PRIVATE
     Source/LcrDuckMatrix.h
     Source/LinkwitzRiley8Crossover.h
     Source/PceHistory.h
+    Source/PluginVariant.h
     Source/SidechainClassifier.h
     Source/SidechainEnvelope.h
     Source/SpectralFrameSmoothers.h
@@ -214,6 +215,7 @@ if (SMART_DUCKING_BUILD_TESTS)
         Source/LcrDuckMatrix.h
         Source/LinkwitzRiley8Crossover.h
         Source/PceHistory.h
+        Source/PluginVariant.h
         Source/SidechainClassifier.h
         Source/SidechainEnvelope.h
         Source/SpectralFrameSmoothers.h

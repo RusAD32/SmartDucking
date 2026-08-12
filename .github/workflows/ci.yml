@@ -123,7 +123,9 @@ jobs:
         run: cmake --preset linux-release-x64
       - name: Build and unit/factory test
         run: |
-          cmake --build --preset linux-release-x64 --parallel 4
+          cmake --build --preset linux-release-x64 \
+            --target SmartDucking_VST3 SmartDuckingTests SmartDuckingVST3FactoryTests \
+            --parallel 4
           xvfb-run -a ctest --preset linux-release-x64 --output-on-failure
       - name: Stage Linux VST3
         run: |

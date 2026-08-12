@@ -2,11 +2,7 @@
 // factory. Both exported audio-module classes share the JUCE controller and
 // the SmartDuckingAudioProcessor implementation.
 
-#if defined(__linux__) || defined(__FreeBSD__)
- #define JUCE_GUI_BASICS_INCLUDE_XHEADERS 1
-#endif
-
-#include "PluginProcessor.h"
+#include "PluginVariant.h"
 
 #define GetPluginFactory JuceDefaultGetPluginFactory
 #include <juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp>

@@ -10,17 +10,12 @@
 #include "LinkwitzRiley8Crossover.h"
 #include "DiagnosticLogger.h"
 #include "LcrDuckMatrix.h"
+#include "PluginVariant.h"
 #include "SidechainEnvelope.h"
 #include "SpectralSuppressor.h"
 
 namespace smart_ducking
 {
-enum class PluginVariant
-{
-    stereo,
-    surround
-};
-
 enum class MonitorMode
 {
     normal = 0,
@@ -32,8 +27,6 @@ enum class MonitorMode
     spectralDelta
 };
 
-PluginVariant exchangeRequestedPluginVariant (PluginVariant) noexcept;
-[[nodiscard]] PluginVariant getRequestedPluginVariant() noexcept;
 } // namespace smart_ducking
 
 class SmartDuckingAudioProcessor final : public juce::AudioProcessor,
