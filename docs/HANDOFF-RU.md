@@ -483,7 +483,7 @@ cmake --preset macos-release-universal \
 cmake --build --preset macos-release-universal --target SmartDuckingPluginval
 ```
 
-Target запускает strictness 5 для готового bundle. Обычная сборка от pluginval не зависит; macOS/Windows GitHub Actions загружают фиксированную версию 1.0.4 и сохраняют validation output как artifact.
+Target запускает strictness 5 для готового bundle. Обычная сборка от pluginval не зависит; macOS/Windows/Linux GitHub Actions загружают фиксированную версию 1.0.4 и сохраняют validation output как artifact.
 
 ## 13. Realtime safety
 
@@ -508,7 +508,7 @@ Target запускает strictness 5 для готового bundle. Обыч�
 
 ## 14. Известные ограничения на момент handoff
 
-Stages A–D завершены, блокирующих известных дефектов релиза 1.0 нет. Dead history/components удалены, PCE history и frame smoothers вынесены из spectral orchestration, добавлены A/B, factory presets, benchmark, внешний pluginval target и macOS/Windows CI.
+Stages A–D завершены, блокирующих известных дефектов релиза 1.0 нет. Dead history/components удалены, PCE history и frame smoothers вынесены из spectral orchestration, добавлены A/B, factory presets, benchmark, внешний pluginval target и macOS/Windows/Linux CI.
 
 Ограничения текущего evidence:
 

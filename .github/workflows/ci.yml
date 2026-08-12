@@ -100,6 +100,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      - name: Download pluginval 1.0.4
+        run: |
+          curl --fail --location \
+            https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_Linux.zip \
+            --output pluginval.zip
+          unzip -q pluginval.zip -d pluginval
+          chmod +x pluginval/pluginval
       - name: Install JUCE Linux dependencies
         run: |
           sudo apt-get update
@@ -120,13 +127,19 @@ jobs:
             xauth \
             xvfb
       - name: Configure Linux x64 Release
-        run: cmake --preset linux-release-x64
+        run: >-
+          cmake --preset linux-release-x64
+          -DSMART_DUCKING_PLUGINVAL_EXECUTABLE=${{ github.workspace }}/pluginval/pluginval
       - name: Build and unit/factory test
         run: |
           cmake --build --preset linux-release-x64 \
             --target SmartDucking_VST3 SmartDuckingTests SmartDuckingVST3FactoryTests \
             --parallel 4
           xvfb-run -a ctest --preset linux-release-x64 --output-on-failure
+      - name: pluginval strictness 5
+        run: >-
+          xvfb-run -a cmake --build --preset linux-release-x64
+          --target SmartDuckingPluginval
       - name: Stage Linux VST3
         run: |
           mkdir -p dist
@@ -140,3 +153,10 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 30
+      - name: Upload pluginval log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pluginval-linux
+          path: build-linux/release-x64/pluginval-results
+          if-no-files-found: ignore

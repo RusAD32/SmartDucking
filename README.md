@@ -64,7 +64,7 @@ cmake --preset macos-release-universal \
 cmake --build --preset macos-release-universal --target SmartDuckingPluginval
 ```
 
-This runs the finished bundle at strictness 5. Normal configure, build, and test commands do not require pluginval. GitHub Actions runs pluginval on macOS and Windows, plus unit and direct VST3 factory tests on all three platforms. A release CPU matrix can be run with:
+This runs the finished bundle at strictness 5. Normal configure, build, and test commands do not require pluginval. GitHub Actions runs pluginval, unit tests, and direct VST3 factory tests on macOS, Windows, and Linux. A release CPU matrix can be run with:
 
 ```sh
 cmake --build --preset macos-release-universal --target SmartDuckingBenchmark
@@ -93,7 +93,7 @@ Every successful GitHub Actions run publishes three 30-day downloadable artifact
 - `Smart-Ducking-VST3-Windows-x64`
 - `Smart-Ducking-VST3-Linux-x64`
 
-Each artifact contains the ready-to-install `Smart Ducking.vst3` bundle for that platform. pluginval reports remain available as separate diagnostic artifacts.
+Each artifact contains the ready-to-install `Smart Ducking.vst3` bundle for that platform. pluginval reports remain available as the separate `pluginval-macos`, `pluginval-windows`, and `pluginval-linux` diagnostic artifacts.
 
 ## Plugin identity
 
@@ -168,7 +168,7 @@ Rout = R + 0.707 C + 0.707 Rs + 0.5 LFE
 - [x] Extracted PCE history and spectral-frame smoothing components with characterization tests
 - [x] Extended processor/factory coverage, variable-block equivalence, and CPU benchmark target
 - [x] Downloadable macOS Universal, Windows x64, and Linux x64 CI artifacts
-- [x] Optional pluginval strictness-5 target and macOS/Windows validation
+- [x] Optional pluginval strictness-5 target and macOS/Windows/Linux validation
 - [x] Finite two-second VST3 tail reporting verified through the factory API
 
 Third-party attribution and the Apache-2.0 license for the adapted PCE factor are recorded in `THIRD_PARTY_LICENSES.md`; the build copies this file into the VST3 bundle and next to the Standalone executable.
