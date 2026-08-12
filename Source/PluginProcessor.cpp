@@ -1116,8 +1116,8 @@ SmartDuckingAudioProcessor::createParameterLayout()
     layout.add (makeFloatParameter (spectralAmountDb, "Spectral Amount", { 0.0f, 18.0f, 0.01f }, 10.0f, "dB"));
     layout.add (makeFloatParameter (spectralLowHz, "Spectral Low", frequencyRange (100.0f, 2000.0f), 150.0f, "Hz"));
     layout.add (makeFloatParameter (spectralHighHz, "Spectral High", frequencyRange (4000.0f, 20000.0f), 20000.0f, "Hz"));
-    layout.add (makeFloatParameter (weightFrequencyHz, "Weight Frequency", frequencyRange (500.0f, 8000.0f), 3000.0f, "Hz"));
-    layout.add (makeFloatParameter (weightGainDb, "Weight Gain", { 0.0f, 12.0f, 0.01f }, 6.0f, "dB"));
+    layout.add (makeFloatParameter (weightFrequencyHz, "Weight Frequency", frequencyRange (500.0f, 20000.0f), 3000.0f, "Hz"));
+    layout.add (makeFloatParameter (weightGainDb, "Weight Gain", { -12.0f, 12.0f, 0.01f }, 6.0f, "dB"));
     layout.add (makeFloatParameter (weightQ, "Weight Q", { 0.3f, 3.0f, 0.001f, 0.5f }, 0.8f, ""));
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { fftResolution, parameterVersion },

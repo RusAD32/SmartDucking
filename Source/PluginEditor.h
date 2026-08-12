@@ -26,16 +26,9 @@ private:
     struct EnvelopePanel;
     struct SpectrumPanel;
 
-    enum class EditorMode
-    {
-        simple,
-        advanced
-    };
-
-    enum class AdvancedPage
+    enum class Page
     {
         dynamics,
-        spectrum,
         routing
     };
 
@@ -51,12 +44,9 @@ private:
                                         const juce::String& unit,
                                         bool percentage = false,
                                         bool linear = false);
-    void setEditorMode (EditorMode);
-    void setAdvancedPage (AdvancedPage);
-    void updateModeButtons();
-    void updateAdvancedButtons();
-    void layoutSimplePanel();
-    void layoutAdvancedPanel();
+    void setPage (Page);
+    void updatePageButtons();
+    void layoutPagePanel();
     void layoutMatrix();
     void setMonitorMode (smart_ducking::MonitorMode);
     void updateStageButtons();
@@ -83,8 +73,6 @@ private:
     std::unique_ptr<SpectrumPanel> spectrumPanel;
     juce::Image onWaveLogo;
 
-    juce::TextButton simpleModeButton { "SIMPLE" };
-    juce::TextButton advancedModeButton { "ADVANCED" };
     std::array<juce::TextButton, 2> comparisonButtons {
         juce::TextButton { "A" }, juce::TextButton { "B" }
     };
@@ -99,21 +87,15 @@ private:
         juce::TextButton { juce::String::charToString (0x0394) }
     };
 
-    juce::Component simplePanel;
-    juce::Component advancedPanel;
+    juce::Component pagePanel;
     juce::Component dynamicsPage;
-    juce::Component spectrumPage;
     juce::Component routingPage;
-    juce::Label simplePageLabel;
-    std::array<juce::TextButton, 3> advancedPageButtons {
+    std::array<juce::TextButton, 2> pageButtons {
         juce::TextButton { "DYNAMICS" },
-        juce::TextButton { "SPECTRUM" },
         juce::TextButton { "ROUTING" }
     };
 
-    std::vector<std::unique_ptr<ParameterControl>> simpleControls;
     std::vector<std::unique_ptr<ParameterControl>> dynamicsControls;
-    std::vector<std::unique_ptr<ParameterControl>> spectrumControls;
     std::vector<std::unique_ptr<ParameterControl>> matrixControls;
 
     juce::Label fftLabel;
@@ -147,8 +129,7 @@ private:
     std::array<float, 5> displayedReductionDb {};
     std::array<float, 5> displayedSpectralDb {};
 
-    EditorMode editorMode = EditorMode::simple;
-    AdvancedPage advancedPage = AdvancedPage::routing;
+    Page currentPage = Page::dynamics;
     juce::Rectangle<float> duckingLampBounds;
     juce::Rectangle<float> activityStatusBounds;
     juce::Rectangle<float> mainInputMeterBounds;

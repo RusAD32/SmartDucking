@@ -29,6 +29,13 @@ class StereoSpectralLcrProcessor
 {
 public:
     static constexpr int displayBinCount = 384;
+    static constexpr float minimumDisplayFrequencyHz = 20.0f;
+    static constexpr float maximumDisplayFrequencyHz = 20000.0f;
+
+    [[nodiscard]] static constexpr float getDisplayMaximumFrequency() noexcept
+    {
+        return maximumDisplayFrequencyHz;
+    }
 
     struct Parameters
     {
@@ -1790,8 +1797,8 @@ private:
         const auto normalisationDb = juce::Decibels::gainToDecibels (
             static_cast<float> (fftSize) * 0.5f,
             -160.0f);
-        constexpr auto minimumDisplayFrequency = 20.0f;
         constexpr auto displayCalibrationDb = 18.0f;
+        constexpr auto maximumDisplayFrequency = getDisplayMaximumFrequency();
         const auto nyquist = static_cast<float> (sampleRate * 0.5);
         const auto channelIsDisplayed = [this, stereoCentreIsAvailable] (int channel)
         {
@@ -1837,8 +1844,21 @@ private:
         {
             const auto normal = static_cast<float> (displayBin)
                               / static_cast<float> (displayBinCount - 1);
-            const auto frequency = minimumDisplayFrequency
-                                 * std::pow (nyquist / minimumDisplayFrequency, normal);
+            const auto frequency = minimumDisplayFrequencyHz
+                                 * std::pow (maximumDisplayFrequency
+                                                 / minimumDisplayFrequencyHz,
+                                             normal);
+            const auto index = static_cast<size_t> (displayBin);
+
+            if (frequency > nyquist)
+            {
+                displayInputDb[index].store (-160.0f, std::memory_order_relaxed);
+                displayOutputDb[index].store (-160.0f, std::memory_order_relaxed);
+                displayReductionDb[index].store (0.0f, std::memory_order_relaxed);
+                displaySpectralMaskDb[index].store (0.0f, std::memory_order_relaxed);
+                continue;
+            }
+
             const auto sourcePosition = juce::jlimit (
                 0.0f,
                 static_cast<float> (sourceBins - 1),
@@ -1929,7 +1949,6 @@ private:
             const auto input = juce::jlimit (-160.0f, 12.0f, calibratedInput);
             const auto output = juce::jlimit (-160.0f, 12.0f, calibratedOutput);
             const auto reduction = juce::jlimit (0.0f, 36.0f, input - output);
-            const auto index = static_cast<size_t> (displayBin);
             displayInputDb[index].store (input, std::memory_order_relaxed);
             displayOutputDb[index].store (output, std::memory_order_relaxed);
             displayReductionDb[index].store (reduction, std::memory_order_relaxed);

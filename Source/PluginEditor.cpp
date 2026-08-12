@@ -70,7 +70,7 @@ void drawCard (juce::Graphics& graphics, juce::Rectangle<float> bounds, float co
 juce::String frequencyText (float frequency)
 {
     if (frequency >= 1000.0f)
-        return juce::String (frequency / 1000.0f, frequency >= 10000.0f ? 0 : 1) + " kHz";
+        return juce::String (frequency / 1000.0f, 2) + " kHz";
 
     return juce::String (juce::roundToInt (frequency)) + " Hz";
 }
@@ -94,11 +94,11 @@ juce::String parameterTooltip (const juce::String& parameterId)
     if (parameterId == spectralAmountDb)
         return "Maximum frequency-selective attenuation driven by the sidechain spectrum.";
     if (parameterId == weightFrequencyHz)
-        return "Centre frequency of the sidechain weighting filter used to prioritise detection.";
+        return "Centre frequency of the spectral detector weighting EQ.";
     if (parameterId == weightGainDb)
-        return "Boost or cut applied by the sidechain weighting filter.";
+        return "Boost or cut in spectral detector sensitivity; negative values de-emphasise this region.";
     if (parameterId == weightQ)
-        return "Bandwidth of the sidechain weighting filter; higher values focus it more narrowly.";
+        return "Bandwidth of the spectral detector weighting EQ; higher values focus it more narrowly.";
     if (parameterId == spectralLowHz)
         return "Lowest frequency affected by spectral ducking. This is also adjustable on the spectrum.";
     if (parameterId == spectralHighHz)
@@ -1004,19 +1004,21 @@ private:
         values.back() = spectrumFloorDb;
     }
 
-    float getNyquist() const noexcept
+    float getMaximumDisplayFrequency() const noexcept
     {
-        const auto sampleRate = processor.getSampleRate();
-        return static_cast<float> ((sampleRate > 1000.0 ? sampleRate : 48000.0) * 0.5);
+        return smart_ducking::StereoSpectralLcrProcessor::getDisplayMaximumFrequency();
     }
 
     float frequencyToX (float frequency, juce::Rectangle<float> bounds) const noexcept
     {
-        constexpr float minimumFrequency = 20.0f;
-        const auto nyquist = getNyquist();
-        const auto normal = std::log (juce::jlimit (minimumFrequency, nyquist, frequency)
+        constexpr auto minimumFrequency =
+            smart_ducking::StereoSpectralLcrProcessor::minimumDisplayFrequencyHz;
+        const auto maximumFrequency = getMaximumDisplayFrequency();
+        const auto normal = std::log (juce::jlimit (minimumFrequency,
+                                                    maximumFrequency,
+                                                    frequency)
                                       / minimumFrequency)
-                          / std::log (nyquist / minimumFrequency);
+                          / std::log (maximumFrequency / minimumFrequency);
         return bounds.getX() + static_cast<float> (normal) * bounds.getWidth();
     }
 
@@ -1070,20 +1072,22 @@ private:
             return;
 
         const auto frequency = parameter->convertFrom0to1 (parameter->getValue());
-        const auto nyquist = getNyquist();
+        const auto maximumDisplayFrequency = getMaximumDisplayFrequency();
 
         if (std::abs (frequency - cachedCrossoverFrequency) < 0.001f
-            && std::abs (nyquist - cachedCrossoverNyquist) < 0.001f
+            && std::abs (maximumDisplayFrequency
+                         - cachedMaximumDisplayFrequency) < 0.001f
             && bounds == cachedCrossoverBounds)
             return;
 
         cachedCrossoverFrequency = frequency;
-        cachedCrossoverNyquist = nyquist;
+        cachedMaximumDisplayFrequency = maximumDisplayFrequency;
         cachedCrossoverBounds = bounds;
         const auto centreX = frequencyToX (frequency, bounds);
         constexpr auto halfSpanInOctaves = 1.2f;
         const auto pixelsPerOctave = bounds.getWidth()
-                                   / (std::log (nyquist / 20.0f) / std::log (2.0f));
+                                   / (std::log (maximumDisplayFrequency / 20.0f)
+                                      / std::log (2.0f));
         const auto halfWidth = juce::jmax (1.0f, pixelsPerOctave * halfSpanInOctaves);
 
         for (int point = 0; point < crossoverTemplatePoints; ++point)
@@ -1158,8 +1162,11 @@ private:
                                juce::Justification::centredRight);
         }
 
-        for (const auto frequency : { 100.0f, 1000.0f, 10000.0f })
+        for (const auto frequency : { 100.0f, 1000.0f, 10000.0f, 20000.0f })
         {
+            if (frequency > getMaximumDisplayFrequency())
+                continue;
+
             const auto x = frequencyToX (frequency, bounds);
             auto labelWouldOverlapMarker = false;
 
@@ -1177,13 +1184,15 @@ private:
             if (! labelWouldOverlapMarker)
             {
                 graphics.setColour (mutedTextColour.withAlpha (0.78f));
+                const auto labelBounds = juce::Rectangle<float> (
+                    juce::jlimit (bounds.getX(), bounds.getRight() - 44.0f, x - 22.0f),
+                    bounds.getBottom() - 54.0f,
+                    44.0f,
+                    18.0f);
                 graphics.drawText (frequency >= 1000.0f
                                        ? juce::String (juce::roundToInt (frequency / 1000.0f)) + "k"
                                        : juce::String (juce::roundToInt (frequency)),
-                                   juce::Rectangle<float> (x - 22.0f,
-                                                           bounds.getBottom() - 54.0f,
-                                                           44.0f,
-                                                           18.0f),
+                                   labelBounds,
                                    juce::Justification::centred);
             }
         }
@@ -1440,22 +1449,29 @@ private:
         const auto rawGain = gain->convertFrom0to1 (gain->getValue());
         const auto rawQ = q->convertFrom0to1 (q->getValue());
         const auto area = weightNodeArea();
-        const auto baseline = area.getBottom();
-        const auto gainHeight = area.getHeight() * gain->convertTo0to1 (rawGain);
+        const auto baseline = area.getBottom()
+                            - gain->convertTo0to1 (0.0f) * area.getHeight();
+        const auto nodeY = area.getBottom()
+                         - gain->convertTo0to1 (rawGain) * area.getHeight();
+        const auto gainOffset = baseline - nodeY;
         const auto sigmaOctaves = 1.0f / juce::jmax (0.2f, 2.0f * rawQ);
         juce::Path curve;
+
+        graphics.setColour (voiceColour.withAlpha (0.12f));
+        graphics.drawHorizontalLine (juce::roundToInt (baseline),
+                                     area.getX(), area.getRight());
 
         constexpr int points = 96;
         for (int point = 0; point < points; ++point)
         {
             const auto normal = static_cast<float> (point) / static_cast<float> (points - 1);
             const auto frequencyAtPoint = 20.0f
-                * std::pow (getNyquist() / 20.0f, normal);
+                * std::pow (getMaximumDisplayFrequency() / 20.0f, normal);
             const auto distance = std::log2 (frequencyAtPoint / rawFrequency);
             const auto bell = std::exp (-0.5f * distance * distance
                                         / (sigmaOctaves * sigmaOctaves));
             const auto x = bounds.getX() + normal * bounds.getWidth();
-            const auto y = baseline - gainHeight * bell;
+            const auto y = baseline - gainOffset * bell;
 
             if (point == 0)
                 curve.startNewSubPath (x, y);
@@ -1480,8 +1496,11 @@ private:
         graphics.fillEllipse (handle.reduced (3.0f));
         graphics.drawEllipse (handle, 1.5f);
 
+        const auto preferredLabelY = rawGain >= 0.0f ? node.y - 28.0f : node.y + 10.0f;
         auto label = juce::Rectangle<float> (node.x - 88.0f,
-                                             node.y - 28.0f,
+                                             juce::jlimit (bounds.getY() + 2.0f,
+                                                           bounds.getBottom() - 20.0f,
+                                                           preferredLabelY),
                                              176.0f,
                                              18.0f);
         label.setX (juce::jlimit (bounds.getX(),
@@ -1543,7 +1562,8 @@ private:
                                                (event.position.x - spectrumBounds.getX())
                                                    / spectrumBounds.getWidth());
             const auto rawFrequency = 20.0f
-                                    * std::pow (getNyquist() / 20.0f, normalX);
+                                    * std::pow (getMaximumDisplayFrequency() / 20.0f,
+                                                normalX);
             const auto area = weightNodeArea();
             const auto normalGain = juce::jlimit (0.0f,
                                                   1.0f,
@@ -1597,7 +1617,8 @@ private:
                                           1.0f,
                                           (mouseX - spectrumBounds.getX())
                                               / spectrumBounds.getWidth());
-        const auto frequency = 20.0f * std::pow (getNyquist() / 20.0f, normal);
+        const auto frequency = 20.0f
+                             * std::pow (getMaximumDisplayFrequency() / 20.0f, normal);
         draggedParameter->setValueNotifyingHost (draggedParameter->convertTo0to1 (frequency));
         repaint();
     }
@@ -1721,7 +1742,7 @@ private:
     double lastSpectrumFrameMilliseconds = 0.0;
     float spectrumDisplayOffsetDb = 0.0f;
     float cachedCrossoverFrequency = -1.0f;
-    float cachedCrossoverNyquist = -1.0f;
+    float cachedMaximumDisplayFrequency = -1.0f;
     juce::Rectangle<float> cachedCrossoverBounds;
     float weightDragStartY = 0.0f;
     float weightDragStartQ = 0.8f;
@@ -1749,15 +1770,7 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     setResizeLimits (820, 560, 1400, 900);
     setSize (editorWidth, editorHeight);
 
-    addAndMakeVisible (simpleModeButton);
-    addAndMakeVisible (advancedModeButton);
     addAndMakeVisible (stageControlPanel);
-    simpleModeButton.setClickingTogglesState (false);
-    advancedModeButton.setClickingTogglesState (false);
-    simpleModeButton.onClick = [this] { setEditorMode (EditorMode::simple); };
-    advancedModeButton.onClick = [this] { setEditorMode (EditorMode::advanced); };
-    simpleModeButton.setTooltip ("Show the essential controls only.");
-    advancedModeButton.setTooltip ("Show dynamics, spectral shaping and routing controls.");
 
     for (size_t slot = 0; slot < comparisonButtons.size(); ++slot)
     {
@@ -1829,52 +1842,34 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     }
 
     addAndMakeVisible (*spectrumPanel);
-    addAndMakeVisible (simplePanel);
-    addAndMakeVisible (advancedPanel);
-    simplePanel.addAndMakeVisible (simplePageLabel);
-    simplePageLabel.setText ("ESSENTIAL CONTROLS", juce::dontSendNotification);
-    simplePageLabel.setJustificationType (juce::Justification::centred);
-    simplePageLabel.setColour (juce::Label::textColourId, secondaryTextColour);
-    simplePageLabel.setColour (juce::Label::backgroundColourId,
-                               juce::Colours::white.withAlpha (0.025f));
-    simplePageLabel.setColour (juce::Label::outlineColourId, borderColour);
-    simplePageLabel.setFont (juce::FontOptions { 14.0f, juce::Font::bold });
-    simplePageLabel.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (pagePanel);
 
-    addSliderControl (simplePanel, simpleControls, duckDepthDb, "DUCKING DEPTH", "dB");
-    addSliderControl (simplePanel, simpleControls, spectralAmountDb, "SPECTRAL DEPTH", "dB");
-    addSliderControl (simplePanel, simpleControls, activityThresholdDb, "THRESHOLD", "dBFS");
-    addSliderControl (simplePanel, simpleControls, attackMs, "ATTACK", "ms");
-    addSliderControl (simplePanel, simpleControls, holdMs, "HOLD", "ms");
-    addSliderControl (simplePanel, simpleControls, releaseMs, "RELEASE", "ms");
-
-    for (size_t index = 0; index < advancedPageButtons.size(); ++index)
+    for (size_t index = 0; index < pageButtons.size(); ++index)
     {
-        auto& button = advancedPageButtons[index];
-        advancedPanel.addAndMakeVisible (button);
+        auto& button = pageButtons[index];
+        pagePanel.addAndMakeVisible (button);
         button.setClickingTogglesState (false);
         button.onClick = [this, index]
         {
-            setAdvancedPage (static_cast<AdvancedPage> (index));
+            setPage (static_cast<Page> (index));
         };
     }
 
-    for (auto* page : { &dynamicsPage, &spectrumPage, &routingPage })
-        advancedPanel.addAndMakeVisible (*page);
+    for (auto* page : { &dynamicsPage, &routingPage })
+        pagePanel.addAndMakeVisible (*page);
 
     addSliderControl (dynamicsPage, dynamicsControls, duckDepthDb, "DUCKING DEPTH", "dB");
+    addSliderControl (dynamicsPage, dynamicsControls, spectralAmountDb, "SPECTRAL DEPTH", "dB");
     addSliderControl (dynamicsPage, dynamicsControls, activityThresholdDb, "THRESHOLD", "dBFS");
     addSliderControl (dynamicsPage, dynamicsControls, attackMs, "ATTACK", "ms");
     addSliderControl (dynamicsPage, dynamicsControls, holdMs, "HOLD", "ms");
     addSliderControl (dynamicsPage, dynamicsControls, releaseMs, "RELEASE", "ms");
     addSliderControl (dynamicsPage, dynamicsControls, lookaheadMs, "LOOKAHEAD", "ms");
 
-    addSliderControl (spectrumPage, spectrumControls, spectralAmountDb, "AMOUNT", "dB");
-
-    spectrumPage.addAndMakeVisible (fftLabel);
-    spectrumPage.addAndMakeVisible (fftChoice);
-    spectrumPage.addAndMakeVisible (processingModeLabel);
-    spectrumPage.addAndMakeVisible (processingModeChoice);
+    dynamicsPage.addAndMakeVisible (fftLabel);
+    dynamicsPage.addAndMakeVisible (fftChoice);
+    dynamicsPage.addAndMakeVisible (processingModeLabel);
+    dynamicsPage.addAndMakeVisible (processingModeChoice);
     processingModeLabel.setText ("PROCESSING MODE", juce::dontSendNotification);
     processingModeLabel.setJustificationType (juce::Justification::centred);
     processingModeLabel.setColour (juce::Label::textColourId, secondaryTextColour);
@@ -1997,8 +1992,7 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
         dropLfeToggle.setEnabled (downmixValue->load() >= 0.5f);
 
     restoreUiState();
-    setAdvancedPage (advancedPage);
-    setEditorMode (editorMode);
+    setPage (currentPage);
     audioProcessor.setVisualisationFrameRate (meterRefreshHz);
     audioProcessor.notifyEditorOpened();
     startTimerHz (static_cast<int> (meterRefreshHz));
@@ -2204,9 +2198,7 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
                      &displayedSpectralDb,
                      false);
 
-    const auto lowerBounds = (editorMode == EditorMode::simple ? simplePanel.getBounds()
-                                                                : advancedPanel.getBounds())
-                                 .toFloat();
+    const auto lowerBounds = pagePanel.getBounds().toFloat();
     graphics.setColour (juce::Colours::black.withAlpha (0.08f));
     graphics.fillRoundedRectangle (lowerBounds, 10.0f);
     graphics.setColour (borderColour);
@@ -2274,31 +2266,11 @@ void SmartDuckingAudioProcessorEditor::resized()
     const auto bottomHeight = juce::jlimit (210, 250, getHeight() * 34 / 100);
     auto lower = bounds.removeFromBottom (bottomHeight);
     bounds.removeFromBottom (10);
-    simplePanel.setBounds (lower);
-    advancedPanel.setBounds (lower);
-
-    auto modeRail = lower.reduced (10).removeFromRight (82);
-    const auto modeButtonHeight = 42;
-    const auto modeButtonsHeight = modeButtonHeight * 2 + 6;
-    modeRail = modeRail.withSizeKeepingCentre (modeRail.getWidth(), modeButtonsHeight);
-    simpleModeButton.setBounds (modeRail.removeFromTop (modeButtonHeight));
-    modeRail.removeFromTop (6);
-    advancedModeButton.setBounds (modeRail.removeFromTop (modeButtonHeight));
+    pagePanel.setBounds (lower);
 
     spectrumPanel->setBounds (bounds.withTrimmedLeft (leftMeterWidth)
                                     .withTrimmedRight (rightMeterWidth));
-
-    if (editorMode == EditorMode::simple)
-    {
-        layoutSimplePanel();
-    }
-    else
-    {
-        layoutAdvancedPanel();
-    }
-
-    simpleModeButton.toFront (false);
-    advancedModeButton.toFront (false);
+    layoutPagePanel();
 }
 
 void SmartDuckingAudioProcessorEditor::mouseDown (const juce::MouseEvent& event)
@@ -2364,35 +2336,23 @@ void SmartDuckingAudioProcessorEditor::mouseDown (const juce::MouseEvent& event)
         });
 }
 
-void SmartDuckingAudioProcessorEditor::setEditorMode (EditorMode newMode)
+void SmartDuckingAudioProcessorEditor::setPage (Page newPage)
 {
-    editorMode = newMode;
-
-    simplePanel.setVisible (editorMode == EditorMode::simple);
-    advancedPanel.setVisible (editorMode == EditorMode::advanced);
-    updateModeButtons();
+    currentPage = newPage;
+    dynamicsPage.setVisible (currentPage == Page::dynamics);
+    routingPage.setVisible (currentPage == Page::routing);
+    updatePageButtons();
     saveUiState();
-    resized();
-    repaint();
-}
-
-void SmartDuckingAudioProcessorEditor::setAdvancedPage (AdvancedPage newPage)
-{
-    advancedPage = newPage;
-    dynamicsPage.setVisible (advancedPage == AdvancedPage::dynamics);
-    spectrumPage.setVisible (advancedPage == AdvancedPage::spectrum);
-    routingPage.setVisible (advancedPage == AdvancedPage::routing);
-    updateAdvancedButtons();
-    saveUiState();
-    layoutAdvancedPanel();
+    layoutPagePanel();
     repaint();
 }
 
 void SmartDuckingAudioProcessorEditor::saveUiState()
 {
     auto& state = audioProcessor.getParameterState().state;
-    state.setProperty ("uiEditorMode", static_cast<int> (editorMode), nullptr);
-    state.setProperty ("uiAdvancedPage", static_cast<int> (advancedPage), nullptr);
+    state.setProperty ("uiPage", static_cast<int> (currentPage), nullptr);
+    state.removeProperty ("uiEditorMode", nullptr);
+    state.removeProperty ("uiAdvancedPage", nullptr);
     state.setProperty ("uiMatrixSymmetryLink",
                        matrixSymmetryButton.getToggleState(),
                        nullptr);
@@ -2401,10 +2361,18 @@ void SmartDuckingAudioProcessorEditor::saveUiState()
 void SmartDuckingAudioProcessorEditor::restoreUiState()
 {
     const auto& state = audioProcessor.getParameterState().state;
-    editorMode = static_cast<EditorMode> (juce::jlimit (
-        0, 1, static_cast<int> (state.getProperty ("uiEditorMode", 0))));
-    advancedPage = static_cast<AdvancedPage> (juce::jlimit (
-        0, 2, static_cast<int> (state.getProperty ("uiAdvancedPage", 0))));
+    if (state.hasProperty ("uiPage"))
+    {
+        currentPage = static_cast<Page> (juce::jlimit (
+            0, 1, static_cast<int> (state.getProperty ("uiPage", 0))));
+    }
+    else
+    {
+        // Legacy Advanced/Routing was index 2. Both old Simple and the retired
+        // Advanced/Spectrum page migrate to the complete Dynamics page.
+        currentPage = static_cast<int> (state.getProperty ("uiAdvancedPage", 0)) == 2
+            ? Page::routing : Page::dynamics;
+    }
     matrixSymmetryButton.setToggleState (
         static_cast<bool> (state.getProperty ("uiMatrixSymmetryLink", false)),
         juce::dontSendNotification);
@@ -2485,93 +2453,50 @@ void SmartDuckingAudioProcessorEditor::updateStageButtons()
     }
 }
 
-void SmartDuckingAudioProcessorEditor::updateModeButtons()
+void SmartDuckingAudioProcessorEditor::updatePageButtons()
 {
-    simpleModeButton.setToggleState (editorMode == EditorMode::simple,
-                                     juce::dontSendNotification);
-    advancedModeButton.setToggleState (editorMode == EditorMode::advanced,
-                                       juce::dontSendNotification);
-}
-
-void SmartDuckingAudioProcessorEditor::updateAdvancedButtons()
-{
-    for (size_t index = 0; index < advancedPageButtons.size(); ++index)
-        advancedPageButtons[index].setToggleState (
-            static_cast<int> (advancedPage) == static_cast<int> (index),
+    for (size_t index = 0; index < pageButtons.size(); ++index)
+        pageButtons[index].setToggleState (
+            static_cast<int> (currentPage) == static_cast<int> (index),
             juce::dontSendNotification);
 }
 
-void SmartDuckingAudioProcessorEditor::layoutSimplePanel()
+void SmartDuckingAudioProcessorEditor::layoutPagePanel()
 {
-    if (simplePanel.getWidth() <= 0)
+    if (pagePanel.getWidth() <= 0)
         return;
 
-    auto bounds = simplePanel.getLocalBounds().reduced (12, 9);
-    bounds.removeFromRight (90);
-    simplePageLabel.setBounds (bounds.removeFromTop (34));
-    bounds.removeFromTop (8);
-    const auto width = bounds.getWidth() / juce::jmax (1, static_cast<int> (simpleControls.size()));
-
-    for (size_t index = 0; index < simpleControls.size(); ++index)
-        simpleControls[index]->setBounds (bounds.removeFromLeft (
-            index == simpleControls.size() - 1 ? bounds.getWidth() : width));
-}
-
-void SmartDuckingAudioProcessorEditor::layoutAdvancedPanel()
-{
-    if (advancedPanel.getWidth() <= 0)
-        return;
-
-    auto bounds = advancedPanel.getLocalBounds().reduced (12, 9);
-    bounds.removeFromRight (90);
+    auto bounds = pagePanel.getLocalBounds().reduced (12, 9);
     auto navigation = bounds.removeFromTop (34);
     const auto navigationWidth = navigation.getWidth()
-                               / static_cast<int> (advancedPageButtons.size());
+                               / static_cast<int> (pageButtons.size());
 
-    for (size_t index = 0; index < advancedPageButtons.size(); ++index)
-        advancedPageButtons[index].setBounds (navigation.removeFromLeft (
-            index == advancedPageButtons.size() - 1 ? navigation.getWidth() : navigationWidth));
+    for (size_t index = 0; index < pageButtons.size(); ++index)
+        pageButtons[index].setBounds (navigation.removeFromLeft (
+            index == pageButtons.size() - 1 ? navigation.getWidth() : navigationWidth));
 
     bounds.removeFromTop (8);
-    for (auto* page : { &dynamicsPage, &spectrumPage, &routingPage })
+    for (auto* page : { &dynamicsPage, &routingPage })
         page->setBounds (bounds);
 
     if (! dynamicsControls.empty())
     {
         auto page = dynamicsPage.getLocalBounds();
-        const auto referenceWidth = page.getWidth()
-                                  / juce::jmax (1, static_cast<int> (simpleControls.size()));
-        const auto width = juce::jmin (referenceWidth,
-                                       page.getWidth()
-                                           / static_cast<int> (dynamicsControls.size()));
-        page = page.withSizeKeepingCentre (
-            width * static_cast<int> (dynamicsControls.size()),
-            page.getHeight());
+        const auto selectorWidth = juce::jlimit (140, 180, page.getWidth() / 5);
+        auto selectorArea = page.removeFromRight (selectorWidth).reduced (8, 0);
+        page.removeFromRight (4);
+        auto modeArea = selectorArea.removeFromTop (
+            juce::jmin (68, selectorArea.getHeight() / 2));
+        processingModeLabel.setBounds (modeArea.removeFromTop (26));
+        processingModeChoice.setBounds (modeArea.removeFromTop (34));
+        selectorArea.removeFromTop (4);
+        fftLabel.setBounds (selectorArea.removeFromTop (26));
+        fftChoice.setBounds (selectorArea.removeFromTop (34));
+
+        const auto width = page.getWidth() / static_cast<int> (dynamicsControls.size());
         for (size_t index = 0; index < dynamicsControls.size(); ++index)
             dynamicsControls[index]->setBounds (page.removeFromLeft (
                 index == dynamicsControls.size() - 1 ? page.getWidth() : width));
-    }
-
-    if (! spectrumControls.empty())
-    {
-        auto page = spectrumPage.getLocalBounds();
-        const auto referenceWidth = page.getWidth()
-                                  / juce::jmax (1, static_cast<int> (simpleControls.size()));
-        const auto controlsWidth = referenceWidth
-                                 * static_cast<int> (spectrumControls.size());
-        auto fftArea = page.removeFromRight (juce::jmax (130,
-                                                         page.getWidth() - controlsWidth))
-                               .reduced (8);
-        auto modeArea = fftArea.removeFromTop (juce::jmin (68, fftArea.getHeight() / 2));
-        processingModeLabel.setBounds (modeArea.removeFromTop (26));
-        processingModeChoice.setBounds (modeArea.removeFromTop (34));
-        fftArea.removeFromTop (4);
-        fftLabel.setBounds (fftArea.removeFromTop (26));
-        fftChoice.setBounds (fftArea.removeFromTop (34));
-        const auto width = page.getWidth() / static_cast<int> (spectrumControls.size());
-        for (size_t index = 0; index < spectrumControls.size(); ++index)
-            spectrumControls[index]->setBounds (page.removeFromLeft (
-                index == spectrumControls.size() - 1 ? page.getWidth() : width));
     }
 
     layoutMatrix();

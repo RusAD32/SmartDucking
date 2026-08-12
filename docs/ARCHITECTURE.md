@@ -108,9 +108,12 @@ Three boolean host parameters bypass Crossover, Wideband, and Spectral independe
 
 The spectral engine publishes its real heavy-path state through a lock-free atomic. It remains ACTIVE through detector hold, release, mask decay, and overlap-add tail, and becomes SLEEP only when the existing dry WOLA fast path is actually selected. GUI polling does not wake the engine.
 
+Display frames and the analyser use the same fixed logarithmic 20 Hz–20 kHz frequency grid. At sample rates below 40 kHz, display bins above Nyquist remain empty while the visible axis still reaches 20 kHz. Weight Frequency uses the same 20 kHz upper limit, so its interactive curve cannot stop short of the displayed spectrum.
+
 Voice Stereo/Surround interpretation, standard/VLC Main order, forced downmix,
-and Drop LFE use 30 ms sample ramps. Editor mode, Advanced page, and matrix-link
-choice are stored as non-automatable APVTS root properties. The Output meter
+and Drop LFE use 30 ms sample ramps. The selected Dynamics/Routing page and matrix-link
+choice are stored as non-automatable APVTS root properties. Legacy Simple/Advanced
+state migrates to Dynamics, except the old Routing page which remains Routing. The Output meter
 exposes five spatial channels for normal Surround output and only L/R while
 forced downmix is selected.
 

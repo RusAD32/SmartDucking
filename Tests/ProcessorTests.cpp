@@ -397,6 +397,41 @@ int main()
                 *state.getRawParameterValue (smart_ducking::parameter_ids::processingMode),
                 1.0f),
             "NORMAL processing mode default");
+    if (const auto* weightGain = state.getParameter (
+            smart_ducking::parameter_ids::weightGainDb))
+    {
+        expect (approximatelyEqual (weightGain->convertFrom0to1 (0.0f), -12.0f)
+                    && approximatelyEqual (weightGain->convertFrom0to1 (1.0f), 12.0f)
+                    && approximatelyEqual (*state.getRawParameterValue (
+                                                smart_ducking::parameter_ids::weightGainDb),
+                                            6.0f),
+                "Weight Gain spans negative and positive 12 dB around zero");
+    }
+    else
+    {
+        expect (false, "Weight Gain parameter exists");
+    }
+    if (const auto* weightFrequency = state.getParameter (
+            smart_ducking::parameter_ids::weightFrequencyHz))
+    {
+        expect (approximatelyEqual (weightFrequency->convertFrom0to1 (0.0f), 500.0f, 0.1f)
+                    && approximatelyEqual (weightFrequency->convertFrom0to1 (1.0f),
+                                            20000.0f,
+                                            0.1f)
+                    && approximatelyEqual (*state.getRawParameterValue (
+                                                smart_ducking::parameter_ids::weightFrequencyHz),
+                                            3000.0f,
+                                            0.1f),
+                "Weight Frequency spans 500 Hz to the 20 kHz analyser limit");
+    }
+    else
+    {
+        expect (false, "Weight Frequency parameter exists");
+    }
+    expect (approximatelyEqual (
+                smart_ducking::StereoSpectralLcrProcessor::getDisplayMaximumFrequency(),
+                20000.0f),
+            "analyser always ends at 20 kHz");
     expect (state.getParameter (smart_ducking::parameter_ids::mainFormat) == nullptr,
             "Main Format is fixed by plugin variant rather than exposed as a parameter");
     expect (state.getParameter ("sidechainPreGainDb") == nullptr,
@@ -1840,33 +1875,25 @@ int main()
         };
 
         auto visible = inspectVisibleControls (*editor);
-        expect (visible.sliders == 6 && visible.comboBoxes == 1,
-                "Simple mode exposes six essential controls and Voice Format");
+        expect (visible.sliders == 7 && visible.comboBoxes == 3,
+                "Dynamics exposes all seven dynamics/spectral controls, two selectors, and Voice Format");
         expect (visible.toggleButtons == 0,
-                "Stereo Simple mode hides Surround-only output controls");
-        expect (visible.linearSliders == 0, "Simple mode uses rotary controls");
-        expect (visible.tabbedComponents == 0,
-                "redesigned editor uses Simple/Advanced pages rather than TabbedComponent");
-        expect (visible.haveBounds, "all visible Simple controls have a non-empty layout");
-
-        activate ("ADVANCED");
-        visible = inspectVisibleControls (*editor);
-        expect (visible.sliders == 6 && visible.comboBoxes == 1,
-                "Advanced Dynamics exposes six controls including Lookahead and Voice Format");
+                "Stereo Dynamics hides Surround-only output controls");
         expect (visible.linearSliders == 0, "Dynamics uses rotary controls");
-
-        activate ("SPECTRUM");
-        visible = inspectVisibleControls (*editor);
-        expect (visible.sliders == 1 && visible.comboBoxes == 3,
-                "Advanced Spectrum exposes Amount, two selectors, Voice Format, and the analyser weight node");
-        expect (visible.linearSliders == 0, "Spectrum uses rotary controls");
+        expect (visible.tabbedComponents == 0,
+                "redesigned editor uses lightweight Dynamics/Routing pages rather than TabbedComponent");
+        expect (visible.haveBounds, "all visible Dynamics controls have a non-empty layout");
+        expect (findTextButton (*editor, "SIMPLE") == nullptr
+                    && findTextButton (*editor, "ADVANCED") == nullptr
+                    && findTextButton (*editor, "SPECTRUM") == nullptr,
+                "obsolete Simple/Advanced and Spectrum navigation is absent");
 
         activate ("ROUTING");
         visible = inspectVisibleControls (*editor);
         expect (visible.sliders == 9 && visible.comboBoxes == 1,
                 "Stereo Routing exposes the active 3 by 3 matrix and Voice Format");
         expect (visible.linearSliders == 9, "Routing matrix uses linear sliders");
-        expect (visible.haveBounds, "all visible Advanced controls have a non-empty layout");
+        expect (visible.haveBounds, "all visible Routing controls have a non-empty layout");
 
         if (auto* symmetry = findTextButton (*editor, "L/R LINK"))
         {
@@ -1880,11 +1907,12 @@ int main()
             expect (false, "Routing exposes the L/R symmetry edit link");
         }
 
-        activate ("SIMPLE");
+        activate ("DYNAMICS");
         juce::Image snapshot (juce::Image::RGB, editor->getWidth(), editor->getHeight(), true);
         juce::Graphics snapshotGraphics (snapshot);
         editor->paintEntireComponent (snapshotGraphics, true);
         expect (snapshot.getPixelAt (10, 10).getAlpha() > 0, "custom editor paints off-screen");
+        activate ("ROUTING");
     }
 
     {
@@ -1931,8 +1959,8 @@ int main()
                 inspectSurroundEditor (*component.getChildComponent (child));
         };
         inspectSurroundEditor (*surroundEditor);
-        expect (visibleFormatComboCount == 1,
-                "Surround Simple mode exposes Voice Format without Main Format");
+        expect (visibleFormatComboCount == 3,
+                "Surround Dynamics exposes two processing selectors and Voice Format without Main Format");
         expect (visibleSurroundToggleCount == 2,
                 "Surround header exposes Downmix and Drop LFE; VLC order moved to the meter menu");
         expect (downmixButton != nullptr && downmixButton->isEnabled(),
@@ -1973,12 +2001,12 @@ int main()
                     static_cast<float> (smart_ducking::MonitorMode::spectralDelta)),
             "stage bypass and Monitor Mode survive state round-trip");
     expect (static_cast<int> (restoredProcessor.getParameterState().state.getProperty (
-                "uiEditorMode", -1)) == 0
-                && static_cast<int> (restoredProcessor.getParameterState().state.getProperty (
-                    "uiAdvancedPage", -1)) == 2
+                "uiPage", -1)) == 1
+                && ! restoredProcessor.getParameterState().state.hasProperty ("uiEditorMode")
+                && ! restoredProcessor.getParameterState().state.hasProperty ("uiAdvancedPage")
                 && static_cast<bool> (restoredProcessor.getParameterState().state.getProperty (
                     "uiMatrixSymmetryLink", false)),
-            "Simple/Advanced, page, and symmetry-link UI state survive state round-trip");
+            "Dynamics/Routing page and symmetry-link UI state survive state round-trip");
 
     {
         auto legacyState = processor.getParameterState().copyState();
