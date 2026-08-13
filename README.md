@@ -10,6 +10,8 @@ The custom editor keeps Main/Voice and wideband/spectral Gain Reduction meters v
 
 Lookahead is adjustable from 0 to 50 ms with a 10 ms default. Main reserves the full 50 ms while Voice is delayed by `50 ms - Lookahead`, so the reported latency remains `STFT latency + 50 ms` for every Lookahead value. A finite two-second tail is reported to the host so delayed STFT/crossover/overlap-add output is not truncated after input silence. `NORMAL` is the default Processing Mode for new instances. FFT Resolution and Processing Mode changes are queued during playback and applied only through a safe stopped/prepare configuration path instead of resetting DSP state in the audio callback.
 
+RC2 keeps fixed Main/Lookahead/PDC histories in preallocated power-of-two rings and uses block history advancement for a static silent-sidechain Surround/NORMAL path. When no Voice work is audible, windowing, overlap-add, FFT, PCE, mask, unused crossover branches, spectrum, and meters are skipped as applicable. Weighting curves are cached until their parameters or FFT geometry change. Host-reported offline rendering also suspends dynamic editor updates and shows a static `RENDERING` overlay. In the user's end-to-end REAPER test this raised six-channel video render speed from `86x` before the optimisation to `140x realtime`, versus `150x` without the plug-in.
+
 ## Requirements
 
 - CMake 3.22 or newer

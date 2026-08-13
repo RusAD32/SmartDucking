@@ -65,9 +65,18 @@ RC2 использует отдельную power-of-two ring-buffer для фи
 
 Цифры имеют обычный разброс wall-clock microbenchmark. Реальный REAPER render дополнительно включает media decoder, host routing и остальной проект.
 
+Ручной offline-render benchmark пользователя в REAPER на одном и том же шестиканальном аудио из видео, без Voice sidechain:
+
+- без плагина: `150x realtime`;
+- до RC2 sleep/offline-оптимизаций: `86x`;
+- после первого offline/sleep fast path: `119x`;
+- итоговая RC2 сборка с power-of-two fixed delays и block history path: `140x`.
+
+Это end-to-end измерение вместе с декодированием видео и работой REAPER, поэтому оно не сравнивается напрямую с микробенчмарком выше. Оно подтверждает практический эффект RC2: разрыв относительно render без плагина сократился с 64x до 10x, а скорость с плагином выросла примерно на 63% относительно исходных 86x.
+
 ## REAPER и listening boundary
 
-Пользователь подтвердил успешный ручной smoke-test в REAPER 12 августа. Это подтверждает фактическую загрузку и работу плагина в целевом хосте. Автоматика дополнительно покрывает оба plugin classes, Stereo/Surround Voice, четыре Main/Voice/Output channel order, Downmix/Drop LFE, QUALITY/NORMAL, live LOW/HIGH switch, global-bypass sleep/warmup, x1/x2/x4, sleep/wake, variable blocks и state. Новая сборка с этими уточнениями ожидает отдельного ручного подтверждения и поэтому публикуется только как release candidate, а не как финальный `1.0.0`.
+Пользователь подтвердил функциональный и визуальный smoke-test в REAPER, работу LOW/HIGH и итоговый RC2 offline-render result `140x`. Это подтверждает фактическую загрузку и работу актуальной сборки в целевом хосте. Автоматика дополнительно покрывает оба plugin classes, Stereo/Surround Voice, четыре Main/Voice/Output channel order, Downmix/Drop LFE, QUALITY/NORMAL, live LOW/HIGH switch, global-bypass sleep/warmup, x1/x2/x4, sleep/wake, variable blocks и state. Сборка остаётся release candidate, а не финальным `1.0.0`, до завершения реального рабочего использования и полной продуктовой приёмки.
 
 Полная subjective listening matrix — речь/музыка/эффекты, seek/loop, realtime/offline render, stems и каждый Solo/Delta — остаётся отдельной продуктовой приёмкой. Она не подменяется unit tests и pluginval и в этом record не отмечена как пройденная полностью.
 

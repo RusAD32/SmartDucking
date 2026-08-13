@@ -1,10 +1,10 @@
 # Architecture snapshot — v1.0
 
-This file records the implementation boundary of the stable 1.0 release. The implementation plan and executable tests define the detailed behavioural contract.
+This file records the implementation boundary of the `1.0.0-rc.2` release candidate. The implementation plan and executable tests define the detailed behavioural contract.
 
 ## Spectral/LCR engine
 
-The current increment splits Main with a minimum-phase Linkwitz–Riley 8th-order crossover. Each branch uses four biquads because JUCE's ready-made Linkwitz–Riley processor provides up to a 4th-order response, rather than the required 8th order. The low branch is delayed and recombined without gain reduction. One synchronised STFT engine analyses Main and Voice on the same windows. Both are decomposed into L/C/R first; Voice L/C/R detectors then control direct L/C/R spectral masks and the maximum-aggregated wideband matrix before Main is reconstructed.
+In QUALITY, Main is split with a minimum-phase Linkwitz–Riley 8th-order crossover. Each branch uses four biquads because JUCE's ready-made Linkwitz–Riley processor provides up to a 4th-order response, rather than the required 8th order. The low branch is delayed and recombined without gain reduction. In NORMAL, the split uses complementary weights inside the shared STFT and the external LR8 remains asleep. One synchronised STFT engine analyses Main and Voice on the same windows. Both are decomposed into L/C/R first; Voice L/C/R detectors then control direct L/C/R spectral masks and the maximum-aggregated wideband matrix before Main is reconstructed.
 
 `SpectralSuppressor` remains the orchestration boundary, while persistent PCE state and reusable frame/control smoothing live in `PceHistory.h` and `SpectralFrameSmoothers.h`. The extraction is protected by characterization tests and does not change the signal path.
 
@@ -12,7 +12,7 @@ The current increment splits Main with a minimum-phase Linkwitz–Riley 8th-orde
 
 One `Smart Ducking.vst3` bundle registers two audio-module classes. `Smart Ducking (Stereo)` uses fixed `2 + 6 + 2` buses and `Smart Ducking (Surround)` uses fixed `6 + 6 + 6` buses. The VST3 wrapper only selects the processor variant; processor, DSP, parameters, state, and editor implementation are shared. Main format is fixed by the selected class. The common 5.1 Voice sidechain bus is interpreted by the Voice Stereo/Surround selector.
 
-## Main path
+## Main path — QUALITY
 
 ```text
 Stereo-class Main
@@ -27,6 +27,8 @@ Stereo-class Main
 ```
 
 The Stereo Main path does not use dynamic mono/stereo classification. Surround Main bypasses PCE and processes its L/C/R/Ls/Rs high-band components directly; LFE is excluded and only latency-aligned.
+
+In NORMAL, low-band protection, high-band processing, LOW/HIGH monitoring, spectrum generation, and mask calculation share the same forward STFT. No duplicate crossover FFT or LR8 monitor substitute is run.
 
 ## Main Phantom Center Extraction
 
@@ -100,7 +102,11 @@ DAW automation.
 
 ## Silence optimization
 
-Every STFT frame advances the same WOLA state and therefore keeps PDC and audible latency fixed. During sidechain silence, the combined engine advances cheap dry WOLA frames, so FFT, prominence analysis, spectral mask generation, PCE, and inverse FFT sleep. Voice activity wakes synchronised Main and Voice analysis. After the shared L/C/R envelopes fall below their sleep thresholds, the engine returns to the dry path. `Spectral Amount = 0` bypasses spectral-mask work while retaining LCR matrix ducking.
+During sidechain silence, preallocated per-channel sample rings keep Main history and return the exact STFT-latency-delayed dry signal directly. No window multiply, overlap-add, FFT, prominence analysis, spectral mask, or PCE is performed. After the delay and sidechain histories have drained, a static Surround/NORMAL configuration with closed visualisation advances the same rings in blocks and bypasses per-sample orchestration. Voice activity materialises the retained window, primes overlap-add from the history, and wakes synchronised Main/Voice analysis without changing PDC or losing the first transient. The engine returns to this direct path only after detector hold/release, mask decay, and overlap-add tail complete. `Spectral Amount = 0` bypasses spectral-mask work while retaining LCR matrix ducking.
+
+The fixed Main Lookahead and full-PDC histories share one power-of-two ring with two integer taps. QUALITY low/high alignment uses the same mask-wrapped fixed-delay implementation. The small preallocated memory overhead removes duplicate Main writes, per-sample modulo division, and allocation from steady-state processing; only the continuously variable Voice Lookahead retains an interpolating JUCE delay line.
+
+Weighting-bell values are cached for the active FFT geometry and recalculated only when Weight Frequency/Gain/Q or that geometry changes. Stage bypass and monitor routing skip any LR8, detector, mask, or transform branch that is not needed for audible processing or an explicitly selected monitor.
 
 ## Stage routing and monitoring
 
@@ -108,9 +114,11 @@ Three boolean host parameters bypass Crossover, Wideband, and Spectral independe
 
 A separate boolean is returned through JUCE's `getBypassParameter()` as the standard VST3 bypass control. It uses a 30 ms crossfade around all ducking stages and monitor modes while preserving the declared PDC. Main input remapping, forced downmix/Drop LFE, and surround output remapping remain active. Once the fade reaches bypass, the crossover, sidechain lookahead/detector, FFT/PCE, matrix, and monitor paths stop advancing; only the fixed latency and requested routing/downmix path runs. Leaving bypass runs that wet path silently for one full reported-latency interval before the 30 ms fade back, avoiding stale DSP output. Global bypass is stored in project state but is excluded from factory-program and A/B snapshot recall.
 
-The spectral engine publishes its real heavy-path state through a lock-free atomic. It remains ACTIVE through detector hold, release, mask decay, and overlap-add tail, and becomes SLEEP only when the existing dry WOLA fast path is actually selected. GUI polling does not wake the engine.
+The spectral engine publishes its real heavy-path state through a lock-free atomic. It remains ACTIVE through detector hold, release, mask decay, and overlap-add tail, and becomes SLEEP only when the direct ring-history path is actually selected. GUI polling does not wake the engine.
 
 Display frames and the analyser use the same fixed logarithmic 20 Hz–20 kHz frequency grid. At sample rates below 40 kHz, display bins above Nyquist remain empty while the visible axis still reaches 20 kHz. Weight Frequency uses the same 20 kHz upper limit, so its interactive curve cannot stop short of the displayed spectrum.
+
+When a host marks processing as non-realtime, spectrum capture and audio-thread meter collection are disabled even if the editor is open. The editor stops dynamic polling and draws one static `RENDERING` overlay until realtime processing resumes.
 
 Voice Stereo/Surround interpretation, four-choice Main/Voice/Output channel order,
 forced downmix, and Drop LFE use 30 ms sample ramps. The orders are ITU/SMPTE,
@@ -147,5 +155,5 @@ QUALITY/NORMAL, x1/x2/x4, visualisation-off/on CPU matrix.
 
 The audio callback performs no filesystem access, locking, container resizing,
 FFT construction, or GUI calls. Parameters are read through atomics; all large
-buffers, histories, delay lines, and FFT geometries are prepared before steady-
-state processing.
+buffers, histories, delay lines, FFT geometries, and block-path scratch buffers
+are prepared before steady-state processing.

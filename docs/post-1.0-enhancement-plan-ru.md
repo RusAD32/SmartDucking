@@ -5,10 +5,11 @@
 
 Дата фиксации: 11 августа 2026 года.
 
-Этот документ не изменяет scope ближайшего стабильного релиза. До завершения
-Stage B–D из [`implementation-plan-ru.md`](implementation-plan-ru.md) приоритет
-имеет текущий Variant A и существующие DSP-контракты. Работы из этого документа
-начинаются только от измеренного и прослушанного baseline `1.0`.
+Этот документ не изменяет scope текущего `1.0.0-rc.2`. Этапы A–D и RC2 CPU/offline
+optimization из [`implementation-plan-ru.md`](implementation-plan-ru.md) завершены;
+до финализации и продуктовой приёмки `1.0` приоритет имеют текущий Variant A и
+существующие DSP-контракты. Работы из этого документа начинаются только от
+измеренного, прослушанного и зафиксированного baseline `1.0`.
 
 ## 1. Зачем нужен этот документ
 
@@ -780,7 +781,7 @@ Stereo/Surround и GUI open/closed. Относительное увеличен�
    опциональный link по правилам раздела 10.3.
 4. Реализовать state migration, включая перенос общего набора времени 1.0 в
    оба новых набора с включённым link.
-5. Обновить Simple/Advanced UI без перегрузки controls.
+5. Расширить текущие Dynamics/Routing pages без возврата удалённой иерархии и без перегрузки controls.
 6. Обновить analyzer visualization для perceptual mask.
 7. Добавить понятные tooltips: make-space не ищет оригинального актёра.
 8. Обновить README, architecture, handoff и technical spec.

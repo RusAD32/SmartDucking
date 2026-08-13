@@ -1,12 +1,14 @@
 # Smart Ducking — сводный план разработки
 
-Статус документа: этапы A–D завершены, план доведён до стабильного релиза `1.0.0`.
+Статус документа: этапы A–D и RC2-оптимизация завершены; текущий снимок — release candidate `1.0.0-rc.2`, не финальный релиз `1.0.0`.
 
-Дата актуализации: 13 августа 2026 года.
+Дата актуализации: 14 августа 2026 года.
 
 Прогресс: этап A реализован 10 августа 2026 года, ручной smoke-test сборки в REAPER пройден пользователем 12 августа. Этап B реализован 12 августа и уточнён 13 августа: добавлены независимые stage bypass, взаимно исключающий Monitor Mode, сглаженные paths с постоянной PDC, комплементарные `LOW / HIGH` для Crossover без LFE, фактический индикатор `SLEEP / ACTIVE` и стандартный Global Bypass. LOW/HIGH используют latency-aligned LR8-ветви в QUALITY и реальные комплементарные FFT-веса обработки в NORMAL. Global Bypass сохраняет channel-order routing и Downmix/Drop LFE, а после fade останавливает тяжёлый DSP и прогревает wet path перед возвратом. Этап C реализован 12 августа 2026 года: weighting перенесён на интерактивную ноду, пять конечных matrix controls сглаживаются на частоте STFT, добавлен ручной `L/R LINK`, routing-aware Output meter, сохранение UI-state и короткие переходы Voice/channel-order/Downmix/LFE.
 
 Этап D завершён 12 августа: расширены processor/factory tests, добавлены pluginval/CI и CPU benchmark, вынесены PCE history и frame smoothers, удалён dead UI code, реализованы factory presets и persistent A/B, синхронизирована документация.
+
+Оптимизация RC2 завершена 14 августа: weighting curve пересчитывается только при изменении Frequency/Gain/Q или FFT geometry; отключённые stages не запускают ненужные ветви; в NORMAL внешний LR8 спит, кроме фактической работы QUALITY; при тишине Voice статичный Surround/NORMAL тракт использует блочное продвижение предвыделенных histories вместо посэмпловой orchestration; фиксированные Lookahead/PDC delays объединены в power-of-two ring-buffer с двумя taps. Offline render отключает spectrum, meters и GUI updates, а открытый editor показывает статический `RENDERING`. Пользовательский render-test в REAPER ускорился с `86x` до `140x realtime` (baseline без плагина — `150x`).
 
 Этот документ объединяет решения из первоначальной технической спецификации, результаты уже выполненных этапов, анализ актуального кода и последующие изменения концепции. При расхождении старых разделов `technical-spec-v0.1-ru.md` с этим планом приоритет имеет этот документ. После реализации соответствующего этапа фактическое поведение должно быть перенесено в README, техническую спецификацию и описание архитектуры.
 
@@ -54,24 +56,21 @@
 - sidechain-классификатор `silence / left-only / right-only / dual-mono / stereo / surround`;
 - быстрые Voice-маршруты без лишнего PCE/FFT;
 - сон тяжёлой FFT/PCE/spectral-ветви при тишине sidechain;
-- Simple/Advanced интерфейс, интерактивный анализатор, динамические meters и матрица;
+- прямой интерфейс с вкладками Dynamics/Routing, интерактивным анализатором, динамическими meters и матрицей;
 - unit-тесты DSP и factory-тест обоих VST3-классов;
 - CMake-сборка Debug/Release и основа переносимости на другие ОС.
 
 ## 3. Согласованные изменения концепции
 
-### 3.1 Simple и Advanced
+### 3.1 Dynamics и Routing
 
-Старая идея показывать в Simple только Crossover, Duck Depth, Spectral Amount и FFT Resolution отменена.
+Simple/Advanced и отдельная Spectrum page удалены. Фактическая концепция 1.0:
 
-Фактическая концепция принимается как основная:
-
-- Simple содержит Ducking Depth, Spectral Depth, Threshold, Attack, Hold и Release;
-- Voice Format остаётся глобальным элементом интерфейса;
-- Crossover, Spectral Low и Spectral High управляются маркерами анализатора;
-- Advanced разделён на Dynamics, Spectrum и Routing;
-- FFT Resolution и Processing Mode находятся в Advanced/Spectrum;
-- параметры weighting переносятся с отдельных rotary-контролов на анализатор.
+- две прямые вкладки `DYNAMICS` и `ROUTING`;
+- Dynamics содержит Ducking Depth, Spectral Depth, Threshold, Attack, Hold, Release, Lookahead, FFT Resolution и Processing Mode;
+- Voice Format остаётся глобальным элементом header;
+- Crossover, Spectral Low/High и Weight Frequency/Gain/Q управляются маркерами анализатора без дублирующих rotary controls;
+- Routing содержит динамическую spatial matrix и `L/R LINK`.
 
 ### 3.2 Названия Processing Mode
 
@@ -119,7 +118,7 @@ Weight Frequency, Weight Gain и Weight Q сохраняются как авто
 - широкая bell-кривая отображается отдельным цветом или пунктиром;
 - интерфейс явно сообщает, что кривая меняет чувствительность детектора, а не слышимый EQ Main или Voice.
 
-Нода не должна конфликтовать с маркерами Crossover, Spectral Low и Spectral High. Полное редактирование weighting доступно в Advanced/Spectrum; в Simple нода может быть скрыта или отображаться без интерактивности.
+Нода не конфликтует с маркерами Crossover, Spectral Low и Spectral High и доступна непосредственно над вкладками Dynamics/Routing.
 
 ### 3.6 L/R Symmetry Link
 
@@ -144,32 +143,28 @@ Symmetry Link является инструментом редактирован
 
 ## 4. Безопасная смена конфигурации DSP
 
-Сейчас FFT Resolution и Processing Mode могут сбрасывать STFT/crossover/delay и обновлять latency непосредственно из `processBlock`. Это необходимо устранить до расширения набора режимов.
-
-План:
+FFT Resolution и Processing Mode разделены на requested/active configuration. Реализованный контракт:
 
 1. Разделить запрошенную и активную конфигурации DSP.
 2. Не выполнять сброс больших DSP-состояний и `setLatencySamples` из аудиопотока.
-3. Изменения FFT Resolution применять в безопасной точке, предпочтительно при остановленном transport или при следующем `prepareToPlay`.
-4. Если хост меняет FFT Resolution во время playback, сохранить pending-значение и применить его после остановки с явной индикацией ожидания.
-5. Для Processing Mode, если latency не меняется, рассмотреть короткий crossfade между старым и новым состояниями. Если двойной engine окажется неоправданно дорогим, применять режим по той же stopped-only схеме.
+3. Изменения применять при остановленном transport/message-thread configuration pass или при следующем `prepareToPlay`.
+4. Если хост меняет FFT Resolution или Processing Mode во время playback, сохранить pending-значение до безопасной точки.
+5. Не держать второй параллельный engine только ради смены режима.
 6. Обновлять PDC на message/configuration thread и уведомлять хост только после готовности новой конфигурации.
 7. Сохранять фиксированную Lookahead-часть PDC при любой FFT-конфигурации.
 8. Добавить проверки многократного переключения, разных block sizes и остановки/возобновления REAPER.
 
-Voice Format, Main/Voice/Output order, Downmix и Drop LFE не меняют FFT size, но их мгновенное переключение также не должно создавать щелчок. Для них нужен короткий crossfade или применение при остановленном playback, в зависимости от результата прослушивания.
+Voice Format, Main/Voice/Output order, Downmix и Drop LFE не меняют FFT size и используют реализованные 30 ms ramps без остановки playback.
 
 ## 5. Сглаживание матрицы
 
-Изменения 25 коэффициентов матрицы сейчас попадают в DSP непосредственно. Требуется сглаживание без 25 независимых тяжёлых smoothers.
-
-Рекомендуемая схема:
+Изменения 25 коэффициентов матрицы сглаживаются без 25 независимых тяжёлых smoothers. Реализованная схема:
 
 1. Рассчитать через актуальную матрицу пять конечных target controls L/C/R/Ls/Rs.
 2. Сгладить конечные controls на частоте STFT frames.
 3. Использовать сглаженные controls для wideband gain.
 4. Не менять direct spectral controls: спектральное подавление по-прежнему не использует матрицу соседства.
-5. Подобрать время сглаживания прослушиванием и тестом automation ramps; стартовая область — 20–50 ms.
+5. Использовать проверенный 35 ms one-pole transition.
 
 Проверяются одиночные изменения ячейки, Reset, Diagonal, Symmetry Link, host automation и несколько одновременно активных Voice-каналов.
 
@@ -231,7 +226,7 @@ Voice Format, Main/Voice/Output order, Downmix и Drop LFE не меняют FFT
 
 Для этого DSP публикует lock-free atomic state. Индикатор не должен переходить в SLEEP сразу после исчезновения сырого sidechain, пока не завершились envelope и overlap-add tail.
 
-Дополнительная Advanced/diagnostic-индикация низкого приоритета:
+Возможная дополнительная diagnostic-индикация после 1.0:
 
 - активный режим классификатора sidechain;
 - PCE L/C/R levels;
@@ -250,8 +245,7 @@ Voice Format, Main/Voice/Output order, Downmix и Drop LFE не меняют FFT
 
 Между закрытием и повторным открытием редактора сохраняются:
 
-- Simple/Advanced;
-- выбранная Advanced page;
+- выбранная Dynamics/Routing page;
 - L/R Symmetry Link;
 - при необходимости масштаб или другие чисто визуальные настройки анализатора.
 
@@ -376,14 +370,7 @@ pluginval подключается только как dev/CI-инструмен
 - `docs/ARCHITECTURE.md` — фактический signal flow и realtime-ограничения;
 - этот implementation plan — выполненные пункты и изменившиеся решения.
 
-Необходимо отдельно исправить уже известные расхождения:
-
-- описание Simple/Advanced;
-- статус weighting controls;
-- названия Processing Mode в DAW;
-- активный Lookahead и удалённый Sidechain Pre-Gain;
-- фактический интервал DiagnosticLogger;
-- реализованные Stereo/5.1 возможности, которые старый документ всё ещё относит к future work.
+README, architecture, handoff и validation record синхронизированы с RC2. `technical-spec-v0.1-ru.md` намеренно сохранён как исходная спецификация и не является источником истины для изменившихся решений 1.0.
 
 ## 12. Рекомендуемая последовательность реализации
 
@@ -424,6 +411,15 @@ pluginval подключается только как dev/CI-инструмен
 6. [x] Синхронизировать всю документацию.
 7. [x] Добавить persistent A/B и factory presets после стабилизации parameter schema.
 
+### RC2 — CPU/memory optimization и offline render — реализовано
+
+1. [x] Закешировать weighting curve и static parameter decisions.
+2. [x] Не выполнять LR8/FFT/PCE/mask/meter/spectrum работу, когда соответствующая ветвь не нужна.
+3. [x] Заменить sleeping dry WOLA на прямую latency ring history и добавить блочный silent-Surround path.
+4. [x] Объединить фиксированные Main Lookahead/PDC histories и округлить storage до степени двойки ради mask-based wrap.
+5. [x] Отключить визуализацию и GUI updates во время offline render, сохранив статическую индикацию `RENDERING`.
+6. [x] Проверить sample/block и sleep/wake эквивалентность, sanitizers, pluginval и REAPER render speed.
+
 ## 13. Критерии готовности ближайшего стабильного релиза
 
 - оба VST3-класса загружаются и стабильно работают в REAPER;
@@ -439,6 +435,7 @@ pluginval подключается только как dev/CI-инструмен
 - matrix automation не создаёт zipper noise;
 - SLEEP/ACTIVE отражает фактическое состояние тяжёлой ветви;
 - закрытый GUI не оставляет активной визуализационную FFT-нагрузку;
+- offline render не рассчитывает spectrum/meters и не обновляет динамический UI;
 - realtime и offline render совпадают в пределах численной точности;
 - presets старой версии либо мигрируют предсказуемо, либо документированно считаются несовместимыми;
 - README, technical spec и architecture соответствуют коду.

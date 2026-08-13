@@ -7,7 +7,7 @@
 Рекомендуемый порядок чтения:
 
 1. этот handoff;
-2. [`implementation-plan-ru.md`](implementation-plan-ru.md) — согласованный план дальнейшей разработки;
+2. [`implementation-plan-ru.md`](implementation-plan-ru.md) — выполненный план 1.0 и критерии релиза;
 3. [`post-1.0-enhancement-plan-ru.md`](post-1.0-enhancement-plan-ru.md) — утверждённое направление make-space/hybrid после стабильного 1.0, не текущая точка реализации;
 4. [`ARCHITECTURE.md`](ARCHITECTURE.md) — снимок текущего DSP signal flow;
 5. [`../README.md`](../README.md) — сборка, identity и краткий статус;
@@ -54,7 +54,7 @@ Smart Ducking — VST3 для сведения закадровой озвучк
 - Основная DAW: REAPER на Windows.
 - В одном `Smart Ducking.vst3` зарегистрированы два audio-module class.
 
-Release 1.0.0 проверен локально в Debug и Universal Release: `SmartDucking.Processor` и `SmartDucking.VST3Factory` проходят, а официальный pluginval 1.0.4 проходит strictness 5 для обоих классов. Фактическая среда, benchmark и границы ручной проверки записаны в [`validation-1.0-ru.md`](validation-1.0-ru.md). После получения репозитория всё равно необходимо повторить baseline build и tests на своей машине.
+Текущий снимок — `1.0.0-rc.2`, не финальный релиз. RC2 проверен локально в Debug и Universal Release: `SmartDucking.Processor` и `SmartDucking.VST3Factory` проходят, а официальный pluginval 1.0.4 проходит strictness 5 для обоих классов. Фактическая среда, benchmark и границы ручной проверки записаны в [`validation-1.0-ru.md`](validation-1.0-ru.md). После получения репозитория всё равно необходимо повторить baseline build и tests на своей машине.
 
 ## 4. Plugin classes и шины
 
@@ -274,9 +274,9 @@ Default matrix:
 
 ### 7.6 Sleep/wake
 
-При тишине sidechain engine продолжает дешёвый dry WOLA path, чтобы PDC не менялась. FFT, PCE, prominence, mask и inverse FFT спят. После исчезновения Voice тяжёлый путь остаётся активен до завершения hold, release и overlap-add tail.
+При тишине sidechain предвыделенная Main history возвращает точный latency-aligned dry signal напрямую: windowing, overlap-add, FFT, PCE, prominence, mask и inverse FFT спят. Для статичного Surround/NORMAL с закрытой визуализацией RC2 дополнительно копирует history блоками. После исчезновения Voice тяжёлый путь остаётся активен до завершения hold, release и overlap-add tail; при пробуждении сохранённой истории достаточно, чтобы не потерять начало реплики.
 
-При закрытом editor spectrum visualization выключается. Не выполнять display FFT только ради meter или диагностической анимации.
+При закрытом editor spectrum visualization выключается. Offline render отключает spectrum и meters независимо от состояния editor; открытый editor в это время показывает статический `RENDERING`. Не выполнять display FFT только ради meter или диагностической анимации.
 
 ## 8. Карта исходников
 
@@ -286,12 +286,13 @@ Default matrix:
 | `Source/SpectralSuppressor.h` | Оркестрация STFT/WOLA, Voice analysis, spectral mask, wideband gain, sleep и spectrum capture |
 | `Source/PceHistory.h` | Предвыделенное persistent state для time-smoothed PCE coherence |
 | `Source/SpectralFrameSmoothers.h` | Переиспользуемое сглаживание mask shapes и пяти конечных matrix controls |
+| `Source/PowerOfTwoDelayBuffer.h` | Предвыделенная fixed integer-delay ring с mask wrap, двумя taps и block path |
 | `Source/FactoryPresets.h` | Имена и parameter overrides четырёх заводских starting points |
 | `Source/LinkwitzRiley8Crossover.h` | Сглаживаемый LR8 из четырёх biquad stages на канал |
 | `Source/LcrDuckMatrix.h` | 5×5 defaults и maximum aggregation |
 | `Source/SidechainClassifier.h` | Silence/one-sided/dual-mono/stereo fast-path selection |
 | `Source/SidechainEnvelope.h` | dB mapping и Attack/Hold/Release envelope |
-| `Source/PluginEditor.cpp/.h` | OnWave LookAndFeel, Simple/Advanced UI, spectrum, meters, routing matrix |
+| `Source/PluginEditor.cpp/.h` | OnWave LookAndFeel, Dynamics/Routing UI, spectrum, meters, routing matrix и offline-render overlay |
 | `Source/ParameterIds.h` | Стабильные host parameter IDs |
 | `Source/SmartDuckingVST3Client.cpp` | Composite VST3 factory с двумя plugin classes |
 | `Source/DiagnosticLogger.cpp/.h` | Lock-free counters и отдельный low-priority file writer в diagnostic builds |
@@ -507,8 +508,8 @@ Stages A–D завершены, блокирующих известных де�
 
 Ограничения текущего evidence:
 
-1. Windows job описан в GitHub Actions, но локальная проверка этого snapshot выполнена на macOS; результат Windows следует брать из конкретного CI run.
-2. Ручной REAPER smoke-test подтверждён пользователем до финального Stage D hardening; полная listening matrix остаётся отдельной продуктовой приёмкой, а не unit-тестом.
+1. Локальная проверка этого snapshot выполнена на macOS; результаты Windows/Linux следует брать из конкретного CI run RC2.
+2. Ручной REAPER functional/UI smoke-test и offline render-performance test подтверждены пользователем. Полная listening matrix остаётся отдельной продуктовой приёмкой, а не unit-тестом.
 3. Нотаризация, installer и pluginval strictness 10 не являются обязательным baseline 1.0.
 4. Дальнейшие DSP-эксперименты из post-1.0 плана не должны менять 1.0 state/identity без migration.
 
@@ -536,7 +537,7 @@ Stages A–D завершены, блокирующих известных де�
 
 - `StereoSpectralLcrProcessor::getLatencySamples()`;
 - `lowBandDelay`;
-- отдельный LFE delay;
+- полный PDC tap `mainLatencyDelay`, которым LFE пользуется без отдельной второй delay line;
 - значение `setLatencySamples()`;
 - текущий FFT Resolution и Processing Mode.
 
