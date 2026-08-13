@@ -8,6 +8,7 @@
 #include "PluginProcessor.h"
 #include "LcrDuckMatrix.h"
 #include "PceHistory.h"
+#include "PowerOfTwoDelayBuffer.h"
 #include "SidechainClassifier.h"
 #include "SidechainEnvelope.h"
 #include "SpectralFrameSmoothers.h"
@@ -354,7 +355,8 @@ ProcessorImpulseResult processImpulseWithLookahead (float lookaheadMs,
 }
 
 std::array<std::vector<float>, 2> renderDeterministicSignal (
-    const std::vector<int>& blockPattern)
+    const std::vector<int>& blockPattern,
+    bool nonRealtime = false)
 {
     constexpr double sampleRate = 48000.0;
     constexpr int totalSamples = 16384;
@@ -365,6 +367,7 @@ std::array<std::vector<float>, 2> renderDeterministicSignal (
     setParameter (processor, smart_ducking::parameter_ids::holdMs, 20.0f);
     setParameter (processor, smart_ducking::parameter_ids::releaseMs, 80.0f);
     processor.prepareToPlay (sampleRate, maximumBlock);
+    processor.setNonRealtime (nonRealtime);
     juce::MidiBuffer midi;
     std::array<std::vector<float>, 2> output;
     for (auto& channel : output)
@@ -456,6 +459,57 @@ int findWidebandOnsetSample (float lookaheadMs)
 int main()
 {
     juce::ScopedJuceInitialiser_GUI initialiseJuceGui;
+
+    {
+        smart_ducking::PowerOfTwoDelayBuffer delay;
+        constexpr auto maximumDelay = 37;
+        delay.prepare (2, maximumDelay);
+        expect (delay.getAllocatedSamples() == 128,
+                "fixed delay trades bounded extra memory for power-of-two wrapping");
+
+        std::array<float, 96> reference {};
+        auto samplePathMatches = true;
+        for (int sample = 0; sample < 96; ++sample)
+        {
+            const auto input = static_cast<float> (sample + 1);
+            reference[static_cast<size_t> (sample)] = input;
+            const auto taps = delay.processSample (0, input, 7, 31);
+            const auto expectedFirst = sample >= 7
+                ? reference[static_cast<size_t> (sample - 7)] : 0.0f;
+            const auto expectedSecond = sample >= 31
+                ? reference[static_cast<size_t> (sample - 31)] : 0.0f;
+            samplePathMatches = samplePathMatches
+                && approximatelyEqual (taps.first, expectedFirst)
+                && approximatelyEqual (taps.second, expectedSecond);
+        }
+        expect (samplePathMatches,
+                "fixed delay returns exact integer taps across ring wrapping");
+
+        delay.reset();
+        constexpr std::array<int, 6> blockSizes { 1, 5, 17, 31, 43, 63 };
+        std::array<float, 63> input {};
+        std::array<float, 63> output {};
+        auto sourceIndex = 0;
+        auto blockPathMatches = true;
+        for (const auto blockSize : blockSizes)
+        {
+            for (int sample = 0; sample < blockSize; ++sample)
+                input[static_cast<size_t> (sample)] = static_cast<float> (++sourceIndex);
+
+            delay.processBlock (1, input.data(), output.data(), blockSize, 23);
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto absoluteSample = sourceIndex - blockSize + sample;
+                const auto expected = absoluteSample >= 23
+                    ? static_cast<float> (absoluteSample - 23 + 1) : 0.0f;
+                blockPathMatches = blockPathMatches
+                    && approximatelyEqual (output[static_cast<size_t> (sample)], expected);
+            }
+        }
+        expect (blockPathMatches,
+                "fixed delay block processing matches the sample timeline for variable blocks");
+    }
+
     SmartDuckingAudioProcessor processor;
     SmartDuckingAudioProcessor surroundProcessor (smart_ducking::PluginVariant::surround);
 
@@ -1891,6 +1945,210 @@ int main()
     expect (sleepingSuppressor.getProcessedFftFrameCount() > 0,
             "voice activity wakes the heavy spectral path");
 
+    {
+        smart_ducking::StereoSpectralLcrProcessor sampleSuppressor;
+        smart_ducking::StereoSpectralLcrProcessor blockSuppressor;
+        sampleSuppressor.prepare (48000.0);
+        blockSuppressor.prepare (48000.0);
+        constexpr std::array<int, 8> blockSizes { 1, 7, 63, 128, 511, 17, 1024, 257 };
+        constexpr auto maximumBlockSize = 1024;
+        std::array<std::array<float, maximumBlockSize>, 5> input {};
+        std::array<std::array<float, maximumBlockSize>, 5> blockOutput {};
+        std::array<const float*, 5> inputPointers {};
+        std::array<float*, 5> outputPointers {};
+        auto phase = 0.0;
+        auto blockPathMatches = true;
+
+        for (const auto blockSamples : blockSizes)
+        {
+            for (size_t channel = 0; channel < input.size(); ++channel)
+            {
+                inputPointers[channel] = input[channel].data();
+                outputPointers[channel] = blockOutput[channel].data();
+
+                for (int sample = 0; sample < blockSamples; ++sample)
+                {
+                    input[channel][static_cast<size_t> (sample)] = 0.25f
+                        * static_cast<float> (std::sin (
+                            phase + 0.17 * static_cast<double> (channel)));
+                    phase += 0.013;
+                }
+            }
+
+            blockSuppressor.processSilentSidechainBlock (inputPointers,
+                                                          outputPointers,
+                                                          blockSamples,
+                                                          false);
+
+            for (int sample = 0; sample < blockSamples; ++sample)
+            {
+                const smart_ducking::StereoSpectralLcrProcessor::LcrSample main {
+                    input[0][static_cast<size_t> (sample)],
+                    input[1][static_cast<size_t> (sample)],
+                    input[2][static_cast<size_t> (sample)],
+                    input[3][static_cast<size_t> (sample)],
+                    input[4][static_cast<size_t> (sample)]
+                };
+                const auto reference = sampleSuppressor.processSample (
+                    main, {}, false, false, {});
+
+                for (int channel = 0; channel < 5; ++channel)
+                    blockPathMatches = blockPathMatches
+                        && approximatelyEqual (
+                            blockOutput[static_cast<size_t> (channel)]
+                                       [static_cast<size_t> (sample)],
+                            reference.get (channel));
+            }
+        }
+
+        expect (blockPathMatches,
+                "silent-sidechain block path exactly matches sample-path latency and routing");
+
+        auto wakeMatches = true;
+        const auto wakeSamples = sampleSuppressor.getLatencySamples() * 2;
+        for (int sample = 0; sample < wakeSamples; ++sample)
+        {
+            const auto mainValue = 0.2f * static_cast<float> (std::sin (0.019 * sample));
+            const auto voiceValue = sample < wakeSamples / 2 ? 0.4f : 0.0f;
+            const smart_ducking::StereoSpectralLcrProcessor::LcrSample main {
+                mainValue, mainValue * 0.9f, mainValue * 0.8f,
+                mainValue * 0.7f, mainValue * 0.6f
+            };
+            const smart_ducking::StereoSpectralLcrProcessor::LcrSample voice {
+                voiceValue, voiceValue, voiceValue, voiceValue, voiceValue
+            };
+            const auto reference = sampleSuppressor.processSample (
+                main, voice, false, false, {});
+            const auto afterBlockSleep = blockSuppressor.processSample (
+                main, voice, false, false, {});
+
+            for (int channel = 0; channel < 5; ++channel)
+                wakeMatches = wakeMatches
+                    && approximatelyEqual (reference.get (channel),
+                                           afterBlockSleep.get (channel),
+                                           2.0e-5f);
+        }
+
+        expect (wakeMatches
+                    && blockSuppressor.getProcessedFftFrameCount()
+                         == sampleSuppressor.getProcessedFftFrameCount(),
+                "silent-sidechain block path preserves sample-exact wake behaviour");
+    }
+
+    {
+        constexpr auto blockSize = 127;
+        constexpr auto silentBlocks = 80;
+        constexpr auto voiceBlocks = 96;
+        constexpr auto trailingBlocks = 112;
+        SmartDuckingAudioProcessor blockPathProcessor (
+            smart_ducking::PluginVariant::surround);
+        SmartDuckingAudioProcessor samplePathProcessor (
+            smart_ducking::PluginVariant::surround);
+        setParameter (blockPathProcessor,
+                      smart_ducking::parameter_ids::voiceFormat,
+                      1.0f);
+        setParameter (samplePathProcessor,
+                      smart_ducking::parameter_ids::voiceFormat,
+                      1.0f);
+        blockPathProcessor.prepareToPlay (48000.0, blockSize);
+        samplePathProcessor.prepareToPlay (48000.0, blockSize);
+        // Keeping realtime visualisation enabled forces the established sample
+        // path without changing its audio result.
+        samplePathProcessor.notifyEditorOpened();
+        juce::AudioBuffer<float> blockBuffer (12, blockSize);
+        juce::AudioBuffer<float> sampleBuffer (12, blockSize);
+        juce::MidiBuffer blockMidi;
+        juce::MidiBuffer sampleMidi;
+        auto processorPathsMatch = true;
+        auto maximumProcessorPathError = 0.0f;
+        auto maximumErrorBlock = -1;
+        auto maximumErrorChannel = -1;
+        auto maximumErrorSample = -1;
+        auto phase = 0.0;
+
+        for (int block = 0; block < silentBlocks + voiceBlocks + trailingBlocks; ++block)
+        {
+            blockBuffer.clear();
+            const auto voiceActive = block >= silentBlocks
+                                  && block < silentBlocks + voiceBlocks;
+
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto signal = 0.2f * static_cast<float> (std::sin (phase));
+                phase += 0.021;
+
+                for (int channel = 0; channel < 6; ++channel)
+                    blockBuffer.setSample (
+                        channel,
+                        sample,
+                        signal * (1.0f - 0.07f * static_cast<float> (channel)));
+
+                if (voiceActive)
+                    for (int channel = 0; channel < 6; ++channel)
+                        blockBuffer.setSample (6 + channel,
+                                               sample,
+                                               0.35f - 0.02f * channel);
+            }
+
+            sampleBuffer.makeCopyOf (blockBuffer, true);
+            blockPathProcessor.processBlock (blockBuffer, blockMidi);
+            samplePathProcessor.processBlock (sampleBuffer, sampleMidi);
+
+            for (int channel = 0; channel < 6; ++channel)
+                for (int sample = 0; sample < blockSize; ++sample)
+                {
+                    const auto error = std::abs (
+                        blockBuffer.getSample (channel, sample)
+                        - sampleBuffer.getSample (channel, sample));
+                    processorPathsMatch = processorPathsMatch && error <= 3.0e-5f;
+                    if (error > maximumProcessorPathError)
+                    {
+                        maximumProcessorPathError = error;
+                        maximumErrorBlock = block;
+                        maximumErrorChannel = channel;
+                        maximumErrorSample = sample;
+                    }
+                }
+        }
+
+        expect (blockPathProcessor.getStaticSilentSidechainBlockCount() > 0,
+                "static 5.1 processing enters the silent-sidechain block path");
+        expect (blockPathProcessor.getProcessedFftFrameCount() > 0,
+                "Voice wakes FFT processing after the block sleep path");
+        if (! processorPathsMatch)
+            std::cerr << "Block/sample path maximum error: "
+                      << maximumProcessorPathError << " at block "
+                      << maximumErrorBlock << ", channel "
+                      << maximumErrorChannel << ", sample "
+                      << maximumErrorSample << '\n';
+        expect (processorPathsMatch,
+                "block sleep, Voice wake, and return to sleep match the sample path");
+    }
+
+    {
+        SmartDuckingAudioProcessor offlineProcessor (
+            smart_ducking::PluginVariant::surround);
+        constexpr int offlineBlockSize = 128;
+        offlineProcessor.prepareToPlay (48000.0, offlineBlockSize);
+        offlineProcessor.notifyEditorOpened();
+        offlineProcessor.setNonRealtime (true);
+        juce::AudioBuffer<float> offlineBuffer (12, offlineBlockSize);
+        juce::MidiBuffer offlineMidi;
+        offlineBuffer.clear();
+        offlineProcessor.processBlock (offlineBuffer, offlineMidi);
+        expect (offlineProcessor.isOfflineRenderingActive()
+                    && ! offlineProcessor.isSpectrumVisualisationActive(),
+                "offline rendering suppresses spectrum and meter production");
+        expect (offlineProcessor.getStaticSilentSidechainBlockCount() > 0,
+                "static 5.1 offline render uses the silent-sidechain block path");
+
+        offlineProcessor.setNonRealtime (false);
+        offlineProcessor.processBlock (offlineBuffer, offlineMidi);
+        expect (! offlineProcessor.isOfflineRenderingActive()
+                    && offlineProcessor.isSpectrumVisualisationActive(),
+                "realtime processing restores editor visualisation after rendering");
+    }
+
     smart_ducking::StereoSpectralLcrProcessor leftFastPathSuppressor;
     leftFastPathSuppressor.prepare (48000.0);
 
@@ -2182,7 +2440,7 @@ int main()
     {
         const auto fixedBlocks = renderDeterministicSignal ({ 128 });
         const auto variableBlocks = renderDeterministicSignal (
-            { 1, 17, 63, 128, 257, 511, 31 });
+            { 1, 17, 63, 128, 257, 511, 31 }, true);
         auto maximumDifference = 0.0f;
 
         for (size_t channel = 0; channel < fixedBlocks.size(); ++channel)

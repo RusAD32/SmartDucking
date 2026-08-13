@@ -110,10 +110,11 @@ public:
         for (int channel = 0; channel < lcrChannels; ++channel)
         {
             analysisInput[static_cast<size_t> (channel)].resize (static_cast<size_t> (maximumSize));
-            inputHop[static_cast<size_t> (channel)].resize (static_cast<size_t> (maximumHop));
+            mainHistory[static_cast<size_t> (channel)].resize (static_cast<size_t> (maximumSize));
             fftData[static_cast<size_t> (channel)].resize (static_cast<size_t> (2 * maximumSize));
             sidechainAnalysisInput[static_cast<size_t> (channel)].resize (static_cast<size_t> (maximumSize));
-            sidechainInputHop[static_cast<size_t> (channel)].resize (static_cast<size_t> (maximumHop));
+            sidechainHistory[static_cast<size_t> (channel)].resize (
+                static_cast<size_t> (maximumSize));
             sidechainFftData[static_cast<size_t> (channel)].resize (static_cast<size_t> (2 * maximumSize));
         }
 
@@ -138,6 +139,7 @@ public:
         sidechainFftDataCentre.resize (static_cast<size_t> (2 * maximumSize));
         cachedWeightBellDb.resize (static_cast<size_t> (maximumBins));
         cachedEconomyHighWeight.resize (static_cast<size_t> (maximumBins));
+        synthesisWindow.resize (static_cast<size_t> (maximumSize));
         dryWindowGain.resize (static_cast<size_t> (maximumSize));
 
         lowBandDisplayFft = std::make_unique<juce::dsp::FFT> (lowBandDisplayFftOrder);
@@ -185,10 +187,10 @@ public:
         for (auto& channel : sidechainAnalysisInput)
             std::fill (channel.begin(), channel.end(), 0.0f);
 
-        for (auto& channel : inputHop)
+        for (auto& channel : mainHistory)
             std::fill (channel.begin(), channel.end(), 0.0f);
 
-        for (auto& channel : sidechainInputHop)
+        for (auto& channel : sidechainHistory)
             std::fill (channel.begin(), channel.end(), 0.0f);
 
         for (auto& channel : outputHop)
@@ -226,6 +228,9 @@ public:
             envelope.reset();
         sidechainClassifier.reset();
         hopPosition = 0;
+        historyWritePosition = 0;
+        sidechainHopPeaks.fill (0.0f);
+        lastDirectDelayedInput = {};
         lastMaximumReductionDb.fill (0.0f);
         lastWidebandReductionDb.fill (0.0f);
         lastLcrPeaks = {};
@@ -291,15 +296,26 @@ public:
     {
         fftSize = 1 << (baseOrder + resolutionIndex);
         hopSize = fftSize / (economyMode ? economyOverlapFactor : normalOverlapFactor);
-        synthesisNormalisation = economyMode ? 1.0f : 0.5f;
         activeFft = ffts[static_cast<size_t> (resolutionIndex)].get();
         const auto& activeWindow = windows[static_cast<size_t> (resolutionIndex)];
+        const auto overlapFactor = fftSize / hopSize;
 
         for (int sample = 0; sample < fftSize; ++sample)
         {
             const auto windowValue = activeWindow[static_cast<size_t> (sample)];
+            auto overlapGain = 0.0f;
+
+            for (int overlap = 0; overlap < overlapFactor; ++overlap)
+            {
+                const auto index = (sample + overlap * hopSize) % fftSize;
+                const auto overlappingWindow = activeWindow[static_cast<size_t> (index)];
+                overlapGain += overlappingWindow * overlappingWindow;
+            }
+
+            const auto synthesisValue = windowValue / juce::jmax (epsilon, overlapGain);
+            synthesisWindow[static_cast<size_t> (sample)] = synthesisValue;
             dryWindowGain[static_cast<size_t> (sample)] =
-                windowValue * windowValue * synthesisNormalisation;
+                windowValue * synthesisValue;
         }
 
         const auto envelopeRate = sampleRate / static_cast<double> (hopSize);
@@ -386,7 +402,8 @@ public:
 
             if (newMainIsStereo)
             {
-                clearInactiveStereoChannels (analysisInput, inputHop);
+                clearInactiveStereoChannels (analysisInput);
+                clearInactiveStereoChannels (mainHistory);
                 clearSpectralState (leftSurroundIndex);
                 clearSpectralState (rightSurroundIndex);
                 std::fill (overlapBuffer[leftSurroundIndex].begin(),
@@ -411,23 +428,33 @@ public:
             lastSidechainMode = SidechainClassifier::Mode::silence;
 
             if (newVoiceIsStereo)
-                clearInactiveStereoChannels (sidechainAnalysisInput, sidechainInputHop);
+            {
+                clearInactiveStereoChannels (sidechainAnalysisInput);
+                clearInactiveStereoChannels (sidechainHistory);
+                sidechainHopPeaks[centreIndex] = 0.0f;
+                sidechainHopPeaks[leftSurroundIndex] = 0.0f;
+                sidechainHopPeaks[rightSurroundIndex] = 0.0f;
+            }
         }
 
-        const LcrSample output {
-            outputHop[leftIndex][static_cast<size_t> (hopPosition)],
-            outputHop[centreIndex][static_cast<size_t> (hopPosition)],
-            outputHop[rightIndex][static_cast<size_t> (hopPosition)],
-            outputHop[leftSurroundIndex][static_cast<size_t> (hopPosition)],
-            outputHop[rightSurroundIndex][static_cast<size_t> (hopPosition)]
+        const auto outputPosition = static_cast<size_t> (hopPosition);
+        const LcrSample overlapAddOutput {
+            outputHop[leftIndex][outputPosition],
+            outputHop[centreIndex][outputPosition],
+            outputHop[rightIndex][outputPosition],
+            outputHop[leftSurroundIndex][outputPosition],
+            outputHop[rightSurroundIndex][outputPosition]
         };
+        const auto useDirectOutput = heavyPathSleeping;
 
-        writeHopSample (inputHop, input, newMainIsStereo);
-        writeHopSample (sidechainInputHop, sidechain, newVoiceIsStereo);
+        lastDirectDelayedInput = writeMainHistorySample (input, newMainIsStereo);
+        writeSidechainHistorySample (sidechain, newVoiceIsStereo);
         pushLowBandVisualisationSample (lowBandForVisualisation, newMainIsStereo);
 
         mainIsStereo = newMainIsStereo;
         voiceIsStereo = newVoiceIsStereo;
+
+        historyWritePosition = (historyWritePosition + 1) & (fftSize - 1);
 
         if (++hopPosition >= hopSize)
         {
@@ -435,7 +462,85 @@ public:
             processFrame();
         }
 
-        return output;
+        return useDirectOutput ? lastDirectDelayedInput : overlapAddOutput;
+    }
+
+    void processSilentSidechainBlock (const std::array<const float*, 5>& mainInput,
+                                      const std::array<float*, 5>& delayedOutput,
+                                      int numSamples,
+                                      bool newMainIsStereo) noexcept
+    {
+        if (numSamples <= 0)
+            return;
+
+        jassert (heavyPathSleeping);
+
+        if (newMainIsStereo != mainIsStereo)
+        {
+            pceHistories[mainStreamIndex].clear();
+
+            if (newMainIsStereo)
+            {
+                clearInactiveStereoChannels (analysisInput);
+                clearInactiveStereoChannels (mainHistory);
+                clearSpectralState (leftSurroundIndex);
+                clearSpectralState (rightSurroundIndex);
+            }
+
+            mainIsStereo = newMainIsStereo;
+        }
+
+        const auto processChannel = [&] (size_t channel)
+        {
+            const auto* source = mainInput[channel];
+            auto* destination = delayedOutput[channel];
+
+            if (source == nullptr || destination == nullptr)
+                return;
+
+            auto remaining = numSamples;
+            auto sourceOffset = 0;
+            auto writePosition = historyWritePosition;
+
+            while (remaining > 0)
+            {
+                const auto samplesUntilWrap = fftSize - writePosition;
+                const auto samplesToCopy = juce::jmin (remaining, samplesUntilWrap);
+                auto* history = mainHistory[channel].data() + writePosition;
+                std::copy_n (history,
+                             samplesToCopy,
+                             destination + sourceOffset);
+                std::copy_n (source + sourceOffset,
+                             samplesToCopy,
+                             history);
+                remaining -= samplesToCopy;
+                sourceOffset += samplesToCopy;
+                writePosition = (writePosition + samplesToCopy) & (fftSize - 1);
+            }
+        };
+
+        processChannel (leftIndex);
+        processChannel (rightIndex);
+
+        if (! newMainIsStereo)
+        {
+            processChannel (centreIndex);
+            processChannel (leftSurroundIndex);
+            processChannel (rightSurroundIndex);
+        }
+
+        historyWritePosition = (historyWritePosition + numSamples) & (fftSize - 1);
+        hopPosition += numSamples;
+
+        while (hopPosition >= hopSize)
+        {
+            hopPosition -= hopSize;
+            ++processedOutputFrameCount;
+        }
+
+        lastLcrPeaks = {};
+        lastDirectDelayedInput = {};
+        sidechainHopPeaks.fill (0.0f);
     }
 
     [[nodiscard]] int getLatencySamples() const noexcept { return fftSize; }
@@ -450,6 +555,38 @@ public:
         return lastWidebandReductionDb[static_cast<size_t> (juce::jlimit (0, lcrChannels - 1, channel))];
     }
     [[nodiscard]] LcrSample getLastLcrPeaks() const noexcept { return lastLcrPeaks; }
+    [[nodiscard]] LcrSample getLastDirectDelayedInput() const noexcept
+    {
+        return lastDirectDelayedInput;
+    }
+    [[nodiscard]] bool isSleeping() const noexcept { return heavyPathSleeping; }
+    [[nodiscard]] bool canUseSilentSidechainBlockPath() const noexcept
+    {
+        if (! heavyPathSleeping)
+            return false;
+
+        constexpr auto settledTolerance = 1.0e-6f;
+        const auto isSettled = [] (float current, float target) noexcept
+        {
+            return std::abs (current - target) <= settledTolerance;
+        };
+        const auto controlsAreSettled =
+            isSettled (crossoverStageSmoother.getCurrentValue(),
+                       parameters.crossoverStageMix)
+            && isSettled (widebandStageSmoother.getCurrentValue(),
+                          parameters.widebandStageMix)
+            && isSettled (spectralStageSmoother.getCurrentValue(),
+                          parameters.spectralStageMix)
+            && isSettled (crossoverLowMonitorSmoother.getCurrentValue(),
+                          parameters.crossoverLowMonitorMix)
+            && isSettled (crossoverHighMonitorSmoother.getCurrentValue(),
+                          parameters.crossoverHighMonitorMix);
+        const auto envelopesAreIdle = std::all_of (
+            voiceEnvelopes.begin(), voiceEnvelopes.end(), [] (const auto& envelope)
+            { return envelope.getCurrentValue() <= sleepControlThreshold; });
+
+        return controlsAreSettled && envelopesAreIdle;
+    }
     [[nodiscard]] std::uint64_t getProcessedFftFrameCount() const noexcept
     {
         return processedFftFrameCount;
@@ -559,7 +696,10 @@ public:
 
     void setVisualisationEnabled (bool shouldBeEnabled) noexcept
     {
-        visualisationEnabled.store (shouldBeEnabled, std::memory_order_release);
+        if (visualisationEnabled.exchange (shouldBeEnabled, std::memory_order_acq_rel)
+            == shouldBeEnabled)
+            return;
+
         visualisationFramesUntilUpdate.store (0, std::memory_order_relaxed);
     }
 
@@ -621,37 +761,66 @@ public:
 
 private:
     static void clearInactiveStereoChannels (
-        std::array<std::vector<float>, 5>& history,
-        std::array<std::vector<float>, 5>& hop) noexcept
+        std::array<std::vector<float>, 5>& history) noexcept
     {
         constexpr std::array<size_t, 3> inactiveChannels {
             centreIndex, leftSurroundIndex, rightSurroundIndex
         };
 
         for (const auto channel : inactiveChannels)
-        {
             std::fill (history[channel].begin(), history[channel].end(), 0.0f);
-            std::fill (hop[channel].begin(), hop[channel].end(), 0.0f);
-        }
     }
 
-    void writeHopSample (std::array<std::vector<float>, 5>& destination,
-                         const LcrSample& sample,
-                         bool stereo) noexcept
+    [[nodiscard]] LcrSample writeMainHistorySample (const LcrSample& sample,
+                                                    bool stereo) noexcept
     {
         const auto sanitise = [] (float value) noexcept
         {
             return std::isfinite (value) ? value : 0.0f;
         };
-        const auto position = static_cast<size_t> (hopPosition);
-        destination[leftIndex][position] = sanitise (sample.left);
-        destination[rightIndex][position] = sanitise (sample.right);
+        const auto position = static_cast<size_t> (historyWritePosition);
+        LcrSample delayed {
+            mainHistory[leftIndex][position],
+            stereo ? 0.0f : mainHistory[centreIndex][position],
+            mainHistory[rightIndex][position],
+            stereo ? 0.0f : mainHistory[leftSurroundIndex][position],
+            stereo ? 0.0f : mainHistory[rightSurroundIndex][position]
+        };
+        mainHistory[leftIndex][position] = sanitise (sample.left);
+        mainHistory[rightIndex][position] = sanitise (sample.right);
 
         if (! stereo)
         {
-            destination[centreIndex][position] = sanitise (sample.centre);
-            destination[leftSurroundIndex][position] = sanitise (sample.leftSurround);
-            destination[rightSurroundIndex][position] = sanitise (sample.rightSurround);
+            mainHistory[centreIndex][position] = sanitise (sample.centre);
+            mainHistory[leftSurroundIndex][position] = sanitise (sample.leftSurround);
+            mainHistory[rightSurroundIndex][position] = sanitise (sample.rightSurround);
+
+        }
+
+        return delayed;
+    }
+
+    void writeSidechainHistorySample (const LcrSample& sample, bool stereo) noexcept
+    {
+        const auto sanitise = [] (float value) noexcept
+        { return std::isfinite (value) ? value : 0.0f; };
+        const auto position = static_cast<size_t> (historyWritePosition);
+        const auto writeChannel = [&] (size_t channel, float value)
+        {
+            value = sanitise (value);
+            sidechainHistory[channel][position] = value;
+            sidechainHopPeaks[channel] = juce::jmax (sidechainHopPeaks[channel],
+                                                     std::abs (value));
+        };
+
+        writeChannel (leftIndex, sample.left);
+        writeChannel (rightIndex, sample.right);
+
+        if (! stereo)
+        {
+            writeChannel (centreIndex, sample.centre);
+            writeChannel (leftSurroundIndex, sample.leftSurround);
+            writeChannel (rightSurroundIndex, sample.rightSurround);
         }
     }
 
@@ -697,29 +866,33 @@ private:
                                                    lowBandDisplaySamplesWritten + 1);
     }
 
-    void shiftAnalysisFrame (
-        std::array<std::vector<float>, 5>& history,
-        const std::array<std::vector<float>, 5>& hop,
-        int retainedSamples,
+    void materialiseAnalysisFrame (
+        const std::array<std::vector<float>, 5>& history,
+        std::array<std::vector<float>, 5>& destination,
         bool stereo) noexcept
     {
-        const auto shiftChannel = [&] (size_t channel)
+        const auto copyChannel = [&] (size_t channel)
         {
-            auto& input = history[channel];
-            std::memmove (input.data(),
-                          input.data() + hopSize,
-                          static_cast<size_t> (retainedSamples) * sizeof (float));
-            std::copy_n (hop[channel].begin(), hopSize, input.begin() + retainedSamples);
+            const auto position = static_cast<size_t> (historyWritePosition);
+            const auto firstPart = static_cast<size_t> (fftSize - historyWritePosition);
+            std::copy_n (history[channel].begin() + historyWritePosition,
+                         firstPart,
+                         destination[channel].begin());
+
+            if (position > 0)
+                std::copy_n (history[channel].begin(),
+                             position,
+                             destination[channel].begin() + static_cast<std::ptrdiff_t> (firstPart));
         };
 
-        shiftChannel (leftIndex);
-        shiftChannel (rightIndex);
+        copyChannel (leftIndex);
+        copyChannel (rightIndex);
 
         if (! stereo)
         {
-            shiftChannel (centreIndex);
-            shiftChannel (leftSurroundIndex);
-            shiftChannel (rightSurroundIndex);
+            copyChannel (centreIndex);
+            copyChannel (leftSurroundIndex);
+            copyChannel (rightSurroundIndex);
         }
     }
 
@@ -752,12 +925,7 @@ private:
     [[nodiscard]] bool sidechainHopContainsSignal() const noexcept
     {
         const auto channelContainsSignal = [this] (size_t channel) noexcept
-        {
-            const auto range = juce::FloatVectorOperations::findMinAndMax (
-                sidechainInputHop[channel].data(), hopSize);
-            return juce::jmax (std::abs (range.getStart()), std::abs (range.getEnd()))
-                > SidechainClassifier::technicalSilenceFloor;
-        };
+        { return sidechainHopPeaks[channel] > SidechainClassifier::technicalSilenceFloor; };
 
         if (channelContainsSignal (leftIndex) || channelContainsSignal (rightIndex))
             return true;
@@ -768,12 +936,12 @@ private:
                 || channelContainsSignal (rightSurroundIndex));
     }
 
-    void renderDryFrame (int retainedSamples,
-                         const std::vector<float>& window,
+    void renderDryFrame (const std::vector<float>& window,
                          bool shouldUpdateVisualisation) noexcept
     {
         if (shouldUpdateVisualisation)
         {
+            materialiseAnalysisFrame (mainHistory, analysisInput, mainIsStereo);
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
             const auto diagnosticDisplayStart = juce::Time::getHighResolutionTicks();
 #endif
@@ -787,11 +955,6 @@ private:
 #endif
         }
 
-#if SMART_DUCKING_ENABLE_DIAGNOSTICS
-        const auto diagnosticDryOlaStart = juce::Time::getHighResolutionTicks();
-#endif
-        addDryFrame (mainIsStereo);
-
         if (! heavyPathSleeping)
         {
             for (size_t channel = 0; channel < spectralMaskStateIsClear.size(); ++channel)
@@ -801,16 +964,48 @@ private:
             clearPceHistory();
             heavyPathSleeping = true;
             heavyPathActive.store (false, std::memory_order_release);
+            for (auto& channel : overlapBuffer)
+                std::fill (channel.begin(), channel.end(), 0.0f);
         }
 
-        finishOverlapAddFrame (retainedSamples);
+        lastLcrPeaks = {};
+        sidechainHopPeaks.fill (0.0f);
         ++processedOutputFrameCount;
-#if SMART_DUCKING_ENABLE_DIAGNOSTICS
-        diagnosticOlaTicks.fetch_add (
-            static_cast<std::uint64_t> (juce::Time::getHighResolutionTicks()
-                                        - diagnosticDryOlaStart),
-            std::memory_order_relaxed);
-#endif
+    }
+
+    void primeOverlapForWake() noexcept
+    {
+        for (auto& channel : overlapBuffer)
+            std::fill (channel.begin(), channel.end(), 0.0f);
+
+        const auto primeChannel = [&] (size_t channel)
+        {
+            auto& overlap = overlapBuffer[channel];
+            const auto& input = analysisInput[channel];
+
+            for (int sample = 0; sample < fftSize; ++sample)
+            {
+                auto previousFrameGain = 0.0f;
+
+                for (int previousIndex = sample + hopSize;
+                     previousIndex < fftSize;
+                     previousIndex += hopSize)
+                    previousFrameGain += dryWindowGain[static_cast<size_t> (previousIndex)];
+
+                overlap[static_cast<size_t> (sample)] =
+                    input[static_cast<size_t> (sample)] * previousFrameGain;
+            }
+        };
+
+        primeChannel (leftIndex);
+        primeChannel (rightIndex);
+
+        if (! mainIsStereo)
+        {
+            primeChannel (centreIndex);
+            primeChannel (leftSurroundIndex);
+            primeChannel (rightSurroundIndex);
+        }
     }
 
     void processFrame() noexcept
@@ -842,12 +1037,6 @@ private:
             frameDurationSeconds,
             stageTransitionSeconds);
 
-        shiftAnalysisFrame (analysisInput, inputHop, retainedSamples, mainIsStereo);
-        shiftAnalysisFrame (sidechainAnalysisInput,
-                            sidechainInputHop,
-                            retainedSamples,
-                            voiceIsStereo);
-
         const auto& window = windows[static_cast<size_t> (resolutionIndex)];
         const auto shouldUpdateVisualisation = shouldUpdateVisualisationThisFrame();
         const auto duckingStagesNeedFft = parameters.widebandStageMix > 0.0f
@@ -868,15 +1057,14 @@ private:
         diagnosticStageStart = diagnosticStageEnd;
 #endif
 
-        // Keep the overlap-add delay and analysis histories warm, but avoid
-        // classifying a complete FFT window when no ducking stage can use it.
-        // Likewise, once the heavy path is asleep, only the newly arrived hop
-        // needs to be checked to know whether there is anything to wake for.
+        // The sample rings keep the exact latency-aligned dry path and enough
+        // history for an immediate wake.  While asleep, avoid materialising
+        // complete FFT windows and avoid dry overlap-add altogether.
         if ((! duckingStagesNeedFft && ! crossoverMonitorNeedsFft)
             || (heavyPathSleeping && ! crossoverMonitorNeedsFft
                 && ! sidechainHopContainsSignal()))
         {
-            renderDryFrame (retainedSamples, window, shouldUpdateVisualisation);
+            renderDryFrame (window, shouldUpdateVisualisation);
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
             diagnosticSpectralFrameCount.fetch_add (1, std::memory_order_relaxed);
             diagnosticSpectralFrameTicks.fetch_add (
@@ -886,6 +1074,13 @@ private:
 #endif
             return;
         }
+
+        materialiseAnalysisFrame (mainHistory, analysisInput, mainIsStereo);
+
+        if (duckingStagesNeedFft)
+            materialiseAnalysisFrame (sidechainHistory,
+                                      sidechainAnalysisInput,
+                                      voiceIsStereo);
 
         SidechainClassifier::Result classification;
         float maximumSidechainMagnitude = 0.0f;
@@ -961,7 +1156,7 @@ private:
             && ! sidechainSignalIsPresent && ! envelopeIsActive
             && spectralReductionIsFinished && widebandReductionIsFinished)
         {
-            renderDryFrame (retainedSamples, window, shouldUpdateVisualisation);
+            renderDryFrame (window, shouldUpdateVisualisation);
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
             diagnosticSpectralFrameCount.fetch_add (1, std::memory_order_relaxed);
             diagnosticSpectralFrameTicks.fetch_add (
@@ -973,6 +1168,10 @@ private:
         }
 
         const auto isWakingFromSleep = heavyPathSleeping;
+
+        if (isWakingFromSleep)
+            primeOverlapForWake();
+
         heavyPathSleeping = false;
         heavyPathActive.store (true, std::memory_order_release);
 
@@ -1197,8 +1396,7 @@ private:
                 addDryChannel (static_cast<size_t> (channel));
             else
                 inverseAndAccumulate (transform,
-                                      overlapBuffer[static_cast<size_t> (channel)],
-                                      window);
+                                      overlapBuffer[static_cast<size_t> (channel)]);
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
             diagnosticInverseStageTicks += static_cast<std::uint64_t> (
                 juce::Time::getHighResolutionTicks() - diagnosticStageStart);
@@ -1232,6 +1430,7 @@ private:
         const auto diagnosticOlaStart = juce::Time::getHighResolutionTicks();
 #endif
         finishOverlapAddFrame (retainedSamples);
+        sidechainHopPeaks.fill (0.0f);
         ++processedOutputFrameCount;
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
         diagnosticOlaTicks.fetch_add (
@@ -1438,13 +1637,11 @@ private:
     }
 
     void inverseAndAccumulate (std::vector<float>& transform,
-                               std::vector<float>& overlap,
-                               const std::vector<float>& window) noexcept
+                               std::vector<float>& overlap) noexcept
     {
         activeFft->performRealOnlyInverseTransform (transform.data());
-        juce::FloatVectorOperations::multiply (transform.data(), window.data(), fftSize);
         juce::FloatVectorOperations::multiply (transform.data(),
-                                               synthesisNormalisation,
+                                               synthesisWindow.data(),
                                                fftSize);
         juce::FloatVectorOperations::add (overlap.data(), transform.data(), fftSize);
     }
@@ -2095,16 +2292,15 @@ private:
     int fftSize = 2048;
     int hopSize = 512;
     int hopPosition = 0;
-    float synthesisNormalisation = 0.5f;
     Parameters parameters;
     juce::dsp::FFT* activeFft = nullptr;
     std::array<std::unique_ptr<juce::dsp::FFT>, numModes> ffts;
     std::array<std::vector<float>, numModes> windows;
     std::array<std::vector<float>, lcrChannels> analysisInput;
-    std::array<std::vector<float>, lcrChannels> inputHop;
+    std::array<std::vector<float>, lcrChannels> mainHistory;
     std::array<std::vector<float>, lcrChannels> fftData;
     std::array<std::vector<float>, lcrChannels> sidechainAnalysisInput;
-    std::array<std::vector<float>, lcrChannels> sidechainInputHop;
+    std::array<std::vector<float>, lcrChannels> sidechainHistory;
     std::array<std::vector<float>, lcrChannels> sidechainFftData;
     std::array<std::vector<float>, lcrChannels> outputHop;
     std::array<std::vector<float>, lcrChannels> overlapBuffer;
@@ -2118,6 +2314,7 @@ private:
     std::vector<float> sidechainFftDataCentre;
     std::vector<float> cachedWeightBellDb;
     std::vector<float> cachedEconomyHighWeight;
+    std::vector<float> synthesisWindow;
     std::vector<float> dryWindowGain;
     std::unique_ptr<juce::dsp::FFT> lowBandDisplayFft;
     std::vector<float> lowBandDisplayWindow;
@@ -2137,6 +2334,9 @@ private:
     std::array<float, lcrChannels> lastMaximumReductionDb {};
     std::array<float, lcrChannels> lastWidebandReductionDb {};
     LcrSample lastLcrPeaks;
+    LcrSample lastDirectDelayedInput;
+    std::array<float, lcrChannels> sidechainHopPeaks {};
+    int historyWritePosition = 0;
     std::uint64_t processedFftFrameCount = 0;
     std::uint64_t processedOutputFrameCount = 0;
     std::uint64_t processedSidechainFftCount = 0;

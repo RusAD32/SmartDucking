@@ -29,7 +29,8 @@ void runCase (smart_ducking::PluginVariant variant,
               int processingMode,
               int resolution,
               bool visualisationEnabled,
-              Scenario scenario = Scenario::active)
+              Scenario scenario = Scenario::active,
+              bool offlineRendering = false)
 {
     constexpr double sampleRate = 48000.0;
     constexpr int blockSize = 512;
@@ -57,6 +58,7 @@ void runCase (smart_ducking::PluginVariant variant,
     processor.prepareToPlay (sampleRate, blockSize);
     if (visualisationEnabled)
         processor.notifyEditorOpened();
+    processor.setNonRealtime (offlineRendering);
     const auto mainChannels = processor.getChannelCountOfBus (true, 0);
     juce::AudioBuffer<float> buffer (mainChannels + 6, blockSize);
     juce::MidiBuffer midi;
@@ -117,6 +119,7 @@ void runCase (smart_ducking::PluginVariant variant,
               << '\t' << (processingMode == 0 ? "QUALITY" : "NORMAL")
               << '\t' << "x" << (1 << resolution)
               << '\t' << (visualisationEnabled ? "visualisation-on" : "visualisation-off")
+              << (offlineRendering ? "-offline" : "")
               << '\t' << scenarioName
               << '\t' << std::fixed << std::setprecision (2)
               << realtimeFactor << "x realtime"
@@ -144,6 +147,13 @@ int main()
                                      Scenario::stagesBypassed,
                                      Scenario::globalBypass })
             runCase (variant, 1, 1, false, scenario);
+
+    runCase (smart_ducking::PluginVariant::surround,
+             1,
+             1,
+             true,
+             Scenario::silentSidechain,
+             true);
 
     for (const auto variant : { smart_ducking::PluginVariant::stereo,
                                 smart_ducking::PluginVariant::surround })

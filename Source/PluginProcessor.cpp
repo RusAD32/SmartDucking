@@ -330,25 +330,16 @@ void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumEx
         static_cast<juce::uint32> (juce::jmax (1, maximumExpectedSamplesPerBlock)),
         6
     };
-    lowBandDelay.setMaximumDelayInSamples (maximumDelay);
-    lowBandDelay.prepare (delaySpec);
     const auto stftLatency = spectralLcrProcessor.getLatencySamples();
-    lowBandDelay.setDelay (static_cast<float> (stftLatency));
-    highBandDelay.setMaximumDelayInSamples (maximumDelay);
-    highBandDelay.prepare (delaySpec);
-    highBandDelay.setDelay (static_cast<float> (stftLatency));
-    dryMonitorDelay.setMaximumDelayInSamples (maximumDelay);
-    dryMonitorDelay.prepare (delaySpec);
-    dryMonitorDelay.setDelay (static_cast<float> (stftLatency));
-    globalBypassDelay.setMaximumDelayInSamples (maximumDelay);
-    globalBypassDelay.prepare (delaySpec);
-    globalBypassDelay.setDelay (static_cast<float> (stftLatency));
-
     maximumLookaheadSamples = static_cast<int> (std::ceil (0.050 * currentSampleRate));
+    currentStftLatencySamples = stftLatency;
+    lowBandDelay.prepare (6, maximumDelay);
+    highBandDelay.prepare (6, maximumDelay);
+    mainLatencyDelay.prepare (6, maximumLookaheadSamples + maximumDelay);
+    consecutiveSilentSidechainSamples = maximumLookaheadSamples
+                                      + spectralLcrProcessor.getLatencySamples();
+    staticSilentSidechainBlockCount = 0;
     const auto maximumLookaheadDelay = maximumLookaheadSamples + 2;
-    mainLookaheadDelay.setMaximumDelayInSamples (maximumLookaheadDelay);
-    mainLookaheadDelay.prepare (delaySpec);
-    mainLookaheadDelay.setDelay (static_cast<float> (maximumLookaheadSamples));
     sidechainLookaheadDelay.setMaximumDelayInSamples (maximumLookaheadDelay);
     sidechainLookaheadDelay.prepare (delaySpec);
     const auto requestedLookaheadSamples = juce::jlimit (
@@ -358,6 +349,26 @@ void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumEx
     const auto initialSidechainDelay = static_cast<float> (maximumLookaheadSamples)
                                      - requestedLookaheadSamples;
     sidechainLookaheadDelay.setDelay (initialSidechainDelay);
+    staticSleepLookaheadBuffer.setSize (5,
+                                        juce::jmax (1, maximumExpectedSamplesPerBlock),
+                                        false,
+                                        false,
+                                        true);
+    staticSleepSpatialOutputBuffer.setSize (5,
+                                             juce::jmax (1, maximumExpectedSamplesPerBlock),
+                                             false,
+                                             false,
+                                             true);
+    staticSleepLfeBuffer.setSize (1,
+                                  juce::jmax (1, maximumExpectedSamplesPerBlock),
+                                  false,
+                                  false,
+                                  true);
+    staticSleepSanitisedInputBuffer.setSize (6,
+                                              juce::jmax (1, maximumExpectedSamplesPerBlock),
+                                              false,
+                                              false,
+                                              true);
     smoothedSidechainDelaySamples.reset (currentSampleRate, 0.020);
     smoothedSidechainDelaySamples.setCurrentAndTargetValue (initialSidechainDelay);
 
@@ -543,17 +554,16 @@ void SmartDuckingAudioProcessor::applyRequestedDspConfiguration()
     if (modeChanged || resolutionChanged)
     {
         crossover.reset();
+        currentStftLatencySamples = spectralLcrProcessor.getLatencySamples();
         lowBandDelay.reset();
-        lowBandDelay.setDelay (static_cast<float> (spectralLcrProcessor.getLatencySamples()));
         highBandDelay.reset();
-        highBandDelay.setDelay (static_cast<float> (spectralLcrProcessor.getLatencySamples()));
-        dryMonitorDelay.reset();
-        dryMonitorDelay.setDelay (static_cast<float> (spectralLcrProcessor.getLatencySamples()));
-        globalBypassDelay.reset();
-        globalBypassDelay.setDelay (static_cast<float> (
-            spectralLcrProcessor.getLatencySamples()));
+        mainLatencyDelay.reset();
         currentEconomyMode.store (requestedNormalMode, std::memory_order_relaxed);
         currentResolutionIndex.store (requestedResolution, std::memory_order_relaxed);
+        // The STFT history has been reset, but the variable sidechain delay may
+        // still contain old samples.  Drain it before the block sleep path is
+        // allowed to freeze its read/write positions.
+        consecutiveSilentSidechainSamples = 0;
     }
 
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
@@ -574,6 +584,154 @@ void SmartDuckingAudioProcessor::applyRequestedDspConfiguration()
 int SmartDuckingAudioProcessor::getTotalLatencySamples() const noexcept
 {
     return spectralLcrProcessor.getLatencySamples() + maximumLookaheadSamples;
+}
+
+void SmartDuckingAudioProcessor::processStaticSilentSidechainBlock (
+    juce::AudioBuffer<float>& mainInput,
+    juce::AudioBuffer<float>& output,
+    const smart_ducking::ChannelOrderMix& mainOrder,
+    const smart_ducking::ChannelOrderMix& outputOrder,
+    float downmixMix,
+    float dropLfeMix) noexcept
+{
+    const auto numSamples = output.getNumSamples();
+    const auto& inputMap = smart_ducking::getPhysicalToCanonicalChannels (mainOrder.from);
+    const auto& outputMap = smart_ducking::getPhysicalToCanonicalChannels (outputOrder.from);
+    const auto lookaheadCapacity = staticSleepLookaheadBuffer.getNumSamples();
+    const auto lfeCapacity = staticSleepLfeBuffer.getNumSamples();
+    auto processed = 0;
+
+    while (processed < numSamples)
+    {
+        const auto blockSamples = juce::jmin (numSamples - processed,
+                                             lookaheadCapacity,
+                                             lfeCapacity);
+        std::array<const float*, 5> delayedMain {};
+        std::array<float*, 5> delayedSpatial {};
+
+        for (int physicalChannel = 0; physicalChannel < 6; ++physicalChannel)
+        {
+            const auto canonicalChannel = inputMap[static_cast<size_t> (physicalChannel)];
+            const auto* source = mainInput.getReadPointer (physicalChannel, processed);
+
+            if (canonicalChannel == 3)
+            {
+                auto* delayedLfe = staticSleepLfeBuffer.getWritePointer (0);
+                auto* sanitisedInput = staticSleepSanitisedInputBuffer.getWritePointer (
+                    physicalChannel);
+
+                for (int sample = 0; sample < blockSamples; ++sample)
+                    sanitisedInput[sample] = std::isfinite (source[sample])
+                        ? source[sample] : 0.0f;
+
+                mainLatencyDelay.processBlock (physicalChannel,
+                                                sanitisedInput,
+                                                delayedLfe,
+                                                blockSamples,
+                                                maximumLookaheadSamples
+                                                    + currentStftLatencySamples);
+
+                continue;
+            }
+
+            const auto spatialChannel = canonicalChannel == 0 ? 0
+                                      : canonicalChannel == 2 ? 1
+                                      : canonicalChannel == 1 ? 2
+                                      : canonicalChannel == 4 ? 3 : 4;
+            auto* lookaheadDelayed = staticSleepLookaheadBuffer.getWritePointer (
+                spatialChannel);
+            auto* sanitisedInput = staticSleepSanitisedInputBuffer.getWritePointer (
+                physicalChannel);
+
+            for (int sample = 0; sample < blockSamples; ++sample)
+                sanitisedInput[sample] = std::isfinite (source[sample])
+                    ? source[sample] : 0.0f;
+
+            mainLatencyDelay.processBlock (physicalChannel,
+                                            sanitisedInput,
+                                            lookaheadDelayed,
+                                            blockSamples,
+                                            maximumLookaheadSamples);
+
+            delayedMain[static_cast<size_t> (spatialChannel)] = lookaheadDelayed;
+        }
+
+        if (downmixMix <= 0.0f)
+        {
+            for (int spatialChannel = 0; spatialChannel < 5; ++spatialChannel)
+            {
+                constexpr std::array<int, 5> spatialToCanonical { 0, 2, 1, 4, 5 };
+                const auto canonicalChannel = spatialToCanonical[static_cast<size_t> (
+                    spatialChannel)];
+                const auto physicalOutputChannel = static_cast<int> (std::distance (
+                    outputMap.begin(),
+                    std::find (outputMap.begin(), outputMap.end(), canonicalChannel)));
+                delayedSpatial[static_cast<size_t> (spatialChannel)] =
+                    output.getWritePointer (physicalOutputChannel, processed);
+            }
+        }
+        else
+        {
+            for (int spatialChannel = 0; spatialChannel < 5; ++spatialChannel)
+                delayedSpatial[static_cast<size_t> (spatialChannel)] =
+                    staticSleepSpatialOutputBuffer.getWritePointer (spatialChannel);
+        }
+
+        spectralLcrProcessor.processSilentSidechainBlock (delayedMain,
+                                                          delayedSpatial,
+                                                          blockSamples,
+                                                          false);
+
+        if (downmixMix > 0.0f)
+        {
+            const auto* left = delayedSpatial[0];
+            const auto* centre = delayedSpatial[1];
+            const auto* right = delayedSpatial[2];
+            const auto* leftSurround = delayedSpatial[3];
+            const auto* rightSurround = delayedSpatial[4];
+            const auto* lfe = staticSleepLfeBuffer.getReadPointer (0);
+            auto* outputLeft = output.getWritePointer (0, processed);
+            auto* outputRight = output.getWritePointer (1, processed);
+            const auto lfeGain = 0.5f * (1.0f - dropLfeMix);
+
+            for (int sample = 0; sample < blockSamples; ++sample)
+            {
+                const auto stereoLeft = left[sample]
+                    + smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
+                          * (centre[sample] + leftSurround[sample])
+                    + lfeGain * lfe[sample];
+                const auto stereoRight = right[sample]
+                    + smart_ducking::StereoSpectralLcrProcessor::centreDownmixGain
+                          * (centre[sample] + rightSurround[sample])
+                    + lfeGain * lfe[sample];
+                outputLeft[sample] = left[sample]
+                    + downmixMix * (stereoLeft - left[sample]);
+                outputRight[sample] = right[sample]
+                    + downmixMix * (stereoRight - right[sample]);
+            }
+
+            for (int channel = 2; channel < output.getNumChannels(); ++channel)
+                juce::FloatVectorOperations::multiply (
+                    output.getWritePointer (channel, processed),
+                    1.0f - downmixMix,
+                    blockSamples);
+        }
+        else
+        {
+            const auto* lfe = staticSleepLfeBuffer.getReadPointer (0);
+            const auto lfePhysicalChannel = static_cast<int> (std::distance (
+                outputMap.begin(),
+                std::find (outputMap.begin(), outputMap.end(), 3)));
+            std::copy_n (lfe,
+                         blockSamples,
+                         output.getWritePointer (lfePhysicalChannel, processed));
+        }
+
+        processed += blockSamples;
+    }
+
+    globalBypassDspSleeping.store (false, std::memory_order_relaxed);
+    ++staticSilentSidechainBlockCount;
 }
 
 void SmartDuckingAudioProcessor::processSteadyGlobalBypass (
@@ -610,6 +768,14 @@ void SmartDuckingAudioProcessor::processSteadyGlobalBypass (
     {
         maximum = juce::jmax (maximum, std::abs (value));
     };
+    const auto mainOrderIsConstant = ! smoothedMainChannelOrder.isSmoothing();
+    const auto mainOrderConstant = smoothedMainChannelOrder.getCurrent();
+    const auto outputOrderIsConstant = ! smoothedOutputChannelOrder.isSmoothing();
+    const auto outputOrderConstant = smoothedOutputChannelOrder.getCurrent();
+    const auto downmixMixIsConstant = mainIsStereo || ! smoothedDownmixMix.isSmoothing();
+    const auto downmixMixConstant = mainIsStereo ? 1.0f : smoothedDownmixMix.getCurrentValue();
+    const auto dropLfeMixIsConstant = ! smoothedDropLfeMix.isSmoothing();
+    const auto dropLfeMixConstant = smoothedDropLfeMix.getCurrentValue();
 
     for (int sample = 0; sample < numSamples; ++sample)
     {
@@ -621,16 +787,20 @@ void SmartDuckingAudioProcessor::processSteadyGlobalBypass (
         {
             const auto index = static_cast<size_t> (channel);
             rawMain[index] = readSample (mainRead, channel, sample);
-            mainLookaheadDelay.pushSample (channel, rawMain[index]);
-            const auto lookaheadDelayed = mainLookaheadDelay.popSample (channel);
-            globalBypassDelay.pushSample (channel, lookaheadDelayed);
-            delayedMain[index] = globalBypassDelay.popSample (channel);
+            delayedMain[index] = mainLatencyDelay.processSample (
+                channel,
+                rawMain[index],
+                maximumLookaheadSamples + currentStftLatencySamples);
         }
 
-        const auto mainOrderMix = smoothedMainChannelOrder.getNext();
-        const auto outputOrderMix = smoothedOutputChannelOrder.getNext();
-        const auto downmixMix = mainIsStereo ? 1.0f : smoothedDownmixMix.getNextValue();
-        const auto dropLfeMix = smoothedDropLfeMix.getNextValue();
+        const auto mainOrderMix = mainOrderIsConstant
+            ? mainOrderConstant : smoothedMainChannelOrder.getNext();
+        const auto outputOrderMix = outputOrderIsConstant
+            ? outputOrderConstant : smoothedOutputChannelOrder.getNext();
+        const auto downmixMix = downmixMixIsConstant
+            ? downmixMixConstant : smoothedDownmixMix.getNextValue();
+        const auto dropLfeMix = dropLfeMixIsConstant
+            ? dropLfeMixConstant : smoothedDropLfeMix.getNextValue();
         auto rawCanonical = rawMain;
         auto delayedCanonical = delayedMain;
 
@@ -751,6 +921,11 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     juce::ScopedNoDenormals noDenormals;
     midiMessages.clear();
     processBlockCounter.fetch_add (1, std::memory_order_relaxed);
+    const auto offlineRendering = isNonRealtime();
+    offlineRenderingActive.store (offlineRendering, std::memory_order_release);
+    spectralLcrProcessor.setVisualisationEnabled (
+        editorVisualisationRequested.load (std::memory_order_acquire)
+            && ! offlineRendering);
 
     auto mainInput = getBusBuffer (buffer, true, 0);
     auto output = getBusBuffer (buffer, false, 0);
@@ -865,6 +1040,10 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     if (globalBypassState == GlobalBypassState::bypassed)
     {
+        // The sidechain delay does not advance in steady bypass, so require a
+        // fresh silent drain period before using the sleeping block path after
+        // the wet path is re-enabled.
+        consecutiveSilentSidechainSamples = 0;
         processSteadyGlobalBypass (mainInput,
                                    output,
                                    visualisationActive);
@@ -920,6 +1099,76 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     spectralLcrProcessor.setParameters (spectralParameters);
 
+    const auto staticSilentSidechainCandidate = ! mainIsStereo
+        && useNormalMode
+        && ! visualisationActive
+        && ! diagnosticsActive
+        && globalBypassState == GlobalBypassState::active
+        && crossoverPathSleeping
+        && monitorMode == smart_ducking::MonitorMode::normal
+        && spectralLcrProcessor.canUseSilentSidechainBlockPath()
+        && ! smoothedSidechainDelaySamples.isSmoothing()
+        && ! smoothedQualityCrossoverMix.isSmoothing()
+        && ! smoothedDeltaMonitorMix.isSmoothing()
+        && ! smoothedQualityCrossoverLowMix.isSmoothing()
+        && ! smoothedQualityCrossoverHighMix.isSmoothing()
+        && ! smoothedCrossoverMonitorLfeMute.isSmoothing()
+        && ! smoothedVoiceSurroundMix.isSmoothing()
+        && ! smoothedMainChannelOrder.isSmoothing()
+        && ! smoothedVoiceChannelOrder.isSmoothing()
+        && ! smoothedOutputChannelOrder.isSmoothing()
+        && ! smoothedDownmixMix.isSmoothing()
+        && ! smoothedDropLfeMix.isSmoothing()
+        && ! smoothedGlobalBypassMix.isSmoothing()
+        && smoothedGlobalBypassMix.getCurrentValue() <= 0.0f;
+
+    auto staticSilentSidechainPath = false;
+
+    if (staticSilentSidechainCandidate)
+    {
+        auto sidechainBlockIsSilent = true;
+        if (sidechainEnabled)
+            for (int channel = 0; channel < sidechain.getNumChannels(); ++channel)
+                if (sidechain.getMagnitude (channel, 0, numSamples)
+                    > smart_ducking::SidechainClassifier::technicalSilenceFloor)
+                {
+                    sidechainBlockIsSilent = false;
+                    break;
+                }
+
+        const auto sidechainSilenceDrainSamples = maximumLookaheadSamples
+                                                + spectralLcrProcessor.getLatencySamples();
+        const auto sidechainDelayAndHistoryWereSilent =
+            consecutiveSilentSidechainSamples >= sidechainSilenceDrainSamples;
+        staticSilentSidechainPath = sidechainBlockIsSilent
+                                  && sidechainDelayAndHistoryWereSilent;
+
+        if (sidechainBlockIsSilent)
+            consecutiveSilentSidechainSamples = juce::jmin (
+                sidechainSilenceDrainSamples,
+                consecutiveSilentSidechainSamples + numSamples);
+        else
+            consecutiveSilentSidechainSamples = 0;
+    }
+    else
+    {
+        // The ordinary path advances the sidechain delay.  Starting the
+        // counter again avoids assuming that its contents are silent after an
+        // active or transitional block.
+        consecutiveSilentSidechainSamples = 0;
+    }
+
+    if (staticSilentSidechainPath)
+    {
+        processStaticSilentSidechainBlock (mainInput,
+                                           output,
+                                           smoothedMainChannelOrder.getCurrent(),
+                                           smoothedOutputChannelOrder.getCurrent(),
+                                           smoothedDownmixMix.getCurrentValue(),
+                                           smoothedDropLfeMix.getCurrentValue());
+        return;
+    }
+
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
     const auto activityThreshold = juce::Decibels::decibelsToGain (
         activityThresholdParameter->load());
@@ -957,6 +1206,35 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         const auto* data = channels[static_cast<size_t> (channel)];
         return data != nullptr ? data[sample] : 0.0f;
     };
+    const auto voiceSurroundMixIsConstant = ! smoothedVoiceSurroundMix.isSmoothing();
+    const auto voiceSurroundMixConstant = smoothedVoiceSurroundMix.getCurrentValue();
+    const auto deltaMixIsConstant = ! smoothedDeltaMonitorMix.isSmoothing();
+    const auto deltaMixConstant = smoothedDeltaMonitorMix.getCurrentValue();
+    const auto crossoverLowMixIsConstant = ! smoothedQualityCrossoverLowMix.isSmoothing();
+    const auto crossoverLowMixConstant = smoothedQualityCrossoverLowMix.getCurrentValue();
+    const auto crossoverHighMixIsConstant = ! smoothedQualityCrossoverHighMix.isSmoothing();
+    const auto crossoverHighMixConstant = smoothedQualityCrossoverHighMix.getCurrentValue();
+    const auto globalBypassMixIsConstant = ! smoothedGlobalBypassMix.isSmoothing();
+    const auto globalBypassMixConstant = smoothedGlobalBypassMix.getCurrentValue();
+    const auto sidechainDelayIsConstant = ! smoothedSidechainDelaySamples.isSmoothing();
+    const auto sidechainDelayConstant = smoothedSidechainDelaySamples.getCurrentValue();
+    const auto qualityCrossoverMixIsConstant = ! smoothedQualityCrossoverMix.isSmoothing();
+    const auto qualityCrossoverMixConstant = smoothedQualityCrossoverMix.getCurrentValue();
+    const auto crossoverLfeMuteIsConstant = ! smoothedCrossoverMonitorLfeMute.isSmoothing();
+    const auto crossoverLfeMuteConstant = smoothedCrossoverMonitorLfeMute.getCurrentValue();
+    const auto mainOrderIsConstant = ! smoothedMainChannelOrder.isSmoothing();
+    const auto mainOrderConstant = smoothedMainChannelOrder.getCurrent();
+    const auto voiceOrderIsConstant = ! smoothedVoiceChannelOrder.isSmoothing();
+    const auto voiceOrderConstant = smoothedVoiceChannelOrder.getCurrent();
+    const auto outputOrderIsConstant = ! smoothedOutputChannelOrder.isSmoothing();
+    const auto outputOrderConstant = smoothedOutputChannelOrder.getCurrent();
+    const auto downmixMixIsConstant = mainIsStereo || ! smoothedDownmixMix.isSmoothing();
+    const auto downmixMixConstant = mainIsStereo ? 1.0f : smoothedDownmixMix.getCurrentValue();
+    const auto dropLfeMixIsConstant = ! smoothedDropLfeMix.isSmoothing();
+    const auto dropLfeMixConstant = smoothedDropLfeMix.getCurrentValue();
+
+    if (sidechainDelayIsConstant)
+        sidechainLookaheadDelay.setDelay (sidechainDelayConstant);
 
     for (int sample = 0; sample < numSamples; ++sample)
     {
@@ -965,25 +1243,34 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         std::array<float, 6> delayedMain {};
         std::array<float, 6> delayedVoice {};
         std::array<float, 6> delayedBypassMain {};
-        const auto voiceSurroundMix = smoothedVoiceSurroundMix.getNextValue();
-        const auto deltaMix = smoothedDeltaMonitorMix.getNextValue();
-        const auto crossoverLowMix = smoothedQualityCrossoverLowMix.getNextValue();
-        const auto crossoverHighMix = smoothedQualityCrossoverHighMix.getNextValue();
+        const auto voiceSurroundMix = voiceSurroundMixIsConstant
+            ? voiceSurroundMixConstant : smoothedVoiceSurroundMix.getNextValue();
+        const auto deltaMix = deltaMixIsConstant
+            ? deltaMixConstant : smoothedDeltaMonitorMix.getNextValue();
+        const auto crossoverLowMix = crossoverLowMixIsConstant
+            ? crossoverLowMixConstant : smoothedQualityCrossoverLowMix.getNextValue();
+        const auto crossoverHighMix = crossoverHighMixIsConstant
+            ? crossoverHighMixConstant : smoothedQualityCrossoverHighMix.getNextValue();
         const auto crossoverMonitorMixSum = crossoverLowMix + crossoverHighMix;
         const auto crossoverMonitorMix = juce::jlimit (
             0.0f, 1.0f, crossoverMonitorMixSum);
-        const auto globalBypassMix = smoothedGlobalBypassMix.getNextValue();
-        sidechainLookaheadDelay.setDelay (smoothedSidechainDelaySamples.getNextValue());
+        const auto globalBypassMix = globalBypassMixIsConstant
+            ? globalBypassMixConstant : smoothedGlobalBypassMix.getNextValue();
+        if (! sidechainDelayIsConstant)
+            sidechainLookaheadDelay.setDelay (smoothedSidechainDelaySamples.getNextValue());
 
         const auto mainChannelsToProcess = mainIsStereo ? 2 : 6;
         for (int channel = 0; channel < mainChannelsToProcess; ++channel)
         {
             const auto index = static_cast<size_t> (channel);
             rawMain[index] = readSample (mainRead, channel, sample);
-            mainLookaheadDelay.pushSample (channel, rawMain[index]);
-            delayedMain[index] = mainLookaheadDelay.popSample (channel);
-            globalBypassDelay.pushSample (channel, delayedMain[index]);
-            delayedBypassMain[index] = globalBypassDelay.popSample (channel);
+            const auto delayed = mainLatencyDelay.processSample (
+                channel,
+                rawMain[index],
+                maximumLookaheadSamples,
+                maximumLookaheadSamples + currentStftLatencySamples);
+            delayedMain[index] = delayed.first;
+            delayedBypassMain[index] = delayed.second;
         }
 
         const auto voiceChannelsToProcess = ! voiceIsStereo || voiceSurroundMix > 0.0f ? 6 : 2;
@@ -999,14 +1286,18 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         smart_ducking::StereoSpectralLcrProcessor::LcrSample voiceCanonical;
         smart_ducking::StereoSpectralLcrProcessor::LcrSample rawMainCanonical;
         smart_ducking::StereoSpectralLcrProcessor::LcrSample rawVoiceCanonical;
-        smart_ducking::StereoSpectralLcrProcessor::LcrSample delayedDryMain;
         float mainLfe = 0.0f;
         float bypassMainLfe = 0.0f;
-        const auto mainOrderMix = smoothedMainChannelOrder.getNext();
-        const auto voiceOrderMix = smoothedVoiceChannelOrder.getNext();
-        const auto outputOrderMix = smoothedOutputChannelOrder.getNext();
-        const auto downmixMix = mainIsStereo ? 1.0f : smoothedDownmixMix.getNextValue();
-        const auto dropLfeMix = smoothedDropLfeMix.getNextValue();
+        const auto mainOrderMix = mainOrderIsConstant
+            ? mainOrderConstant : smoothedMainChannelOrder.getNext();
+        const auto voiceOrderMix = voiceOrderIsConstant
+            ? voiceOrderConstant : smoothedVoiceChannelOrder.getNext();
+        const auto outputOrderMix = outputOrderIsConstant
+            ? outputOrderConstant : smoothedOutputChannelOrder.getNext();
+        const auto downmixMix = downmixMixIsConstant
+            ? downmixMixConstant : smoothedDownmixMix.getNextValue();
+        const auto dropLfeMix = dropLfeMixIsConstant
+            ? dropLfeMixConstant : smoothedDropLfeMix.getNextValue();
 
         const auto mapMain = [&] (const std::array<float, 6>& source,
                                   smart_ducking::StereoSpectralLcrProcessor::LcrSample& destination,
@@ -1057,36 +1348,9 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             mapMain (rawMain, rawMainCanonical, ignoredRawLfe);
         if (collectVoicePeaks)
             mapVoice (rawVoice, rawVoiceCanonical);
-        if (globalBypassMix > 0.0f)
-            mapMain (delayedBypassMain, bypassMainCanonical, bypassMainLfe);
-
-        const auto advanceDryMonitor = [&] (int channel)
-        {
-            dryMonitorDelay.pushSample (channel, mainCanonical.get (channel));
-            const auto delayed = dryMonitorDelay.popSample (channel);
-
-            if (deltaMix > 0.0f)
-            {
-                switch (channel)
-                {
-                    case 0: delayedDryMain.left = delayed; break;
-                    case 1: delayedDryMain.centre = delayed; break;
-                    case 2: delayedDryMain.right = delayed; break;
-                    case 3: delayedDryMain.leftSurround = delayed; break;
-                    case 4: delayedDryMain.rightSurround = delayed; break;
-                    default: break;
-                }
-            }
-        };
-
-        advanceDryMonitor (0);
-        advanceDryMonitor (2);
-        if (! mainIsStereo)
-        {
-            advanceDryMonitor (1);
-            advanceDryMonitor (3);
-            advanceDryMonitor (4);
-        }
+        // The second tap is also the aligned LFE path, so keep its routing
+        // current even while global bypass is inactive.
+        mapMain (delayedBypassMain, bypassMainCanonical, bypassMainLfe);
 
         const auto updatePeak = [] (float& maximum, float value) noexcept
         {
@@ -1114,15 +1378,16 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         smart_ducking::StereoSpectralLcrProcessor::LcrSample delayedLow;
         smart_ducking::StereoSpectralLcrProcessor::LcrSample delayedHigh;
         smart_ducking::StereoSpectralLcrProcessor::LcrSample lowBandForVisualisation;
-        const auto qualityCrossoverMix = smoothedQualityCrossoverMix.getNextValue();
+        const auto qualityCrossoverMix = qualityCrossoverMixIsConstant
+            ? qualityCrossoverMixConstant : smoothedQualityCrossoverMix.getNextValue();
 
         const auto processCrossoverChannel = [&] (int channel, float input)
         {
             const auto bands = crossover.processSample (channel, input);
-            lowBandDelay.pushSample (channel, bands.low);
-            const auto low = lowBandDelay.popSample (channel);
-            highBandDelay.pushSample (channel, bands.high);
-            const auto high = highBandDelay.popSample (channel);
+            const auto low = lowBandDelay.processSample (
+                channel, bands.low, currentStftLatencySamples);
+            const auto high = highBandDelay.processSample (
+                channel, bands.high, currentStftLatencySamples);
 
             switch (channel)
             {
@@ -1202,13 +1467,7 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             }
         }
 
-        auto delayedLfe = 0.0f;
-
-        if (! mainIsStereo)
-        {
-            lowBandDelay.pushSample (5, mainLfe);
-            delayedLfe = lowBandDelay.popSample (5);
-        }
+        const auto delayedLfe = mainIsStereo ? 0.0f : bypassMainLfe;
 
         if (! externalCrossoverRequested
             && crossoverWarmupSamplesRemaining == 0
@@ -1222,6 +1481,7 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             mainIsStereo,
             voiceIsStereo,
             lowBandForVisualisation);
+        const auto delayedDryMain = spectralLcrProcessor.getLastDirectDelayedInput();
 
         const auto currentOutputFrame = spectralLcrProcessor.getProcessedOutputFrameCount();
 
@@ -1266,7 +1526,8 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 dropLfeMix);
         };
 
-        const auto crossoverMonitorLfeMute = smoothedCrossoverMonitorLfeMute.getNextValue();
+        const auto crossoverMonitorLfeMute = crossoverLfeMuteIsConstant
+            ? crossoverLfeMuteConstant : smoothedCrossoverMonitorLfeMute.getNextValue();
         auto outputValues = mapOutput (fullBand,
                                        delayedLfe * (1.0f - crossoverMonitorLfeMute));
 

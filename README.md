@@ -2,7 +2,7 @@
 
 Smart Ducking is an OnWave VST3 for voice-aware spatial and spectral ducking in voice-over mixing.
 
-Current status: **`1.0.0-rc.1` release candidate**, not the final `1.0.0` release.
+Current status: **`1.0.0-rc.2` release candidate**, not the final `1.0.0` release.
 
 The `1.0.0` candidate exposes two audio-module classes from one `Smart Ducking.vst3` bundle. `Smart Ducking (Stereo)` has fixed `2 + 6 + 2` buses; `Smart Ducking (Surround)` has fixed `6 + 6 + 6` buses. Both classes use the same processor, DSP, state, and editor sources. Main format follows the selected class, while Voice can be interpreted as Stereo or 5.1 in either class. Stereo sources are decomposed into energy-normalised L/C/R above the Linkwitz–Riley 8th-order crossover; 5.1 sources use direct L/C/R/Ls/Rs components. The Voice components independently control corresponding Variant-A spectral masks, while the adjustable 5×5 matrix calculates spatial wideband gains. LFE is excluded from detection and processing and remains latency-aligned.
 

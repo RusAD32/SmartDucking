@@ -17,6 +17,7 @@ public:
     ~SmartDuckingAudioProcessorEditor() override;
 
     void paint (juce::Graphics&) override;
+    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
 
@@ -144,6 +145,7 @@ private:
     juce::Rectangle<float> outputMeterBounds;
     bool duckingIndicatorActive = false;
     bool editorVisualisationActive = true;
+    bool offlineRenderingDisplayed = false;
     int displayedMatrixRows = 0;
     int displayedMatrixColumns = 0;
     bool applyingSymmetryEdit = false;

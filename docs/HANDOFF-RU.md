@@ -499,7 +499,7 @@ Target запускает strictness 5 для готового bundle. Обыч�
 - sequence-counter snapshot для spectrum;
 - configuration handoff, применяемый вне audio callback.
 
-Все delay lines, FFT buffers, windows и histories выделяются в prepare/configuration stage. SLEEP не освобождает память и не меняет geometry.
+Все delay lines, FFT buffers, windows и histories выделяются в prepare/configuration stage. SLEEP не освобождает память и не меняет geometry. В RC2 фиксированные Main/PDC delays объединены в одну power-of-two ring-buffer с двумя taps: небольшой запас памяти (около 0.25 MB в максимальной 48 kHz geometry) принят намеренно ради mask-based wrap и блочного копирования. Интерполируемый Voice Lookahead оставлен отдельным.
 
 ## 14. Известные ограничения на момент handoff
 

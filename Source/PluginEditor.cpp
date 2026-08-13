@@ -2355,10 +2355,26 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
     graphics.fillRoundedRectangle (lowerBounds, 10.0f);
     graphics.setColour (borderColour);
     graphics.drawRoundedRectangle (lowerBounds.reduced (0.5f), 10.0f, 1.0f);
+
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
     audioProcessor.recordEditorPaintDuration (static_cast<std::uint64_t> (
         juce::Time::getHighResolutionTicks() - diagnosticPaintStart));
 #endif
+}
+
+void SmartDuckingAudioProcessorEditor::paintOverChildren (juce::Graphics& graphics)
+{
+    if (! offlineRenderingDisplayed)
+        return;
+
+    graphics.setColour (backgroundColour.withAlpha (0.88f));
+    graphics.fillRect (getLocalBounds());
+    graphics.setColour (textColour);
+    graphics.setFont (juce::FontOptions { 28.0f, juce::Font::bold });
+    graphics.drawText ("RENDERING",
+                       getLocalBounds(),
+                       juce::Justification::centred,
+                       false);
 }
 
 void SmartDuckingAudioProcessorEditor::resized()
@@ -2429,6 +2445,9 @@ void SmartDuckingAudioProcessorEditor::resized()
 
 void SmartDuckingAudioProcessorEditor::mouseDown (const juce::MouseEvent& event)
 {
+    if (offlineRenderingDisplayed)
+        return;
+
     if (! event.mods.isLeftButtonDown())
         return;
 
@@ -2791,7 +2810,15 @@ void SmartDuckingAudioProcessorEditor::applyMatrixValues (const std::array<float
 
 void SmartDuckingAudioProcessorEditor::timerCallback()
 {
-    const auto shouldVisualise = isShowing();
+    const auto offlineRendering = audioProcessor.isOfflineRenderingActive();
+
+    if (offlineRendering != offlineRenderingDisplayed)
+    {
+        offlineRenderingDisplayed = offlineRendering;
+        repaint();
+    }
+
+    const auto shouldVisualise = isShowing() && ! offlineRendering;
 
     if (shouldVisualise != editorVisualisationActive)
     {
@@ -2803,7 +2830,7 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
             audioProcessor.notifyEditorClosed();
     }
 
-    if (! editorVisualisationActive)
+    if (! editorVisualisationActive || offlineRendering)
         return;
 
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS

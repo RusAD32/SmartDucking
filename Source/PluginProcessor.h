@@ -11,6 +11,7 @@
 #include "DiagnosticLogger.h"
 #include "LcrDuckMatrix.h"
 #include "PluginVariant.h"
+#include "PowerOfTwoDelayBuffer.h"
 #include "SidechainEnvelope.h"
 #include "SpectralSuppressor.h"
 #include "SurroundChannelOrder.h"
@@ -65,6 +66,21 @@ public:
             from = to;
 
         return { from, to, mix };
+    }
+
+    [[nodiscard]] ChannelOrderMix getCurrent() const noexcept
+    {
+        return { from, to, transition.getCurrentValue() };
+    }
+
+    [[nodiscard]] bool isSmoothing() const noexcept { return transition.isSmoothing(); }
+
+    void skip (int numberOfSamples) noexcept
+    {
+        const auto mix = transition.skip (numberOfSamples);
+
+        if (! transition.isSmoothing() && mix >= 1.0f)
+            from = to;
     }
 
 private:
@@ -160,6 +176,10 @@ public:
     [[nodiscard]] bool isGlobalBypassDspSleeping() const noexcept
     {
         return globalBypassDspSleeping.load (std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint64_t getStaticSilentSidechainBlockCount() const noexcept
+    {
+        return staticSilentSidechainBlockCount;
     }
     [[nodiscard]] std::uint64_t getProcessedFftFrameCount() const noexcept
     {
@@ -364,7 +384,9 @@ public:
     void notifyEditorOpened() noexcept
     {
         diagnosticLogger.recordEditorOpened();
-        spectralLcrProcessor.setVisualisationEnabled (true);
+        editorVisualisationRequested.store (true, std::memory_order_release);
+        spectralLcrProcessor.setVisualisationEnabled (
+            ! offlineRenderingActive.load (std::memory_order_acquire));
     }
 
     void setVisualisationFrameRate (float framesPerSecond) noexcept
@@ -374,8 +396,17 @@ public:
 
     void notifyEditorClosed() noexcept
     {
+        editorVisualisationRequested.store (false, std::memory_order_release);
         spectralLcrProcessor.setVisualisationEnabled (false);
         diagnosticLogger.recordEditorClosed();
+    }
+    [[nodiscard]] bool isOfflineRenderingActive() const noexcept
+    {
+        return offlineRenderingActive.load (std::memory_order_acquire);
+    }
+    [[nodiscard]] bool isSpectrumVisualisationActive() const noexcept
+    {
+        return spectralLcrProcessor.isVisualisationEnabled();
     }
     void notifyEditorPaint() noexcept { diagnosticLogger.recordEditorPaint(); }
     void notifyEditorTimer() noexcept { diagnosticLogger.recordEditorTimer(); }
@@ -440,6 +471,13 @@ private:
     void processSteadyGlobalBypass (juce::AudioBuffer<float>& mainInput,
                                     juce::AudioBuffer<float>& output,
                                     bool visualisationActive) noexcept;
+    void processStaticSilentSidechainBlock (
+        juce::AudioBuffer<float>& mainInput,
+        juce::AudioBuffer<float>& output,
+        const smart_ducking::ChannelOrderMix& mainOrder,
+        const smart_ducking::ChannelOrderMix& outputOrder,
+        float downmixMix,
+        float dropLfeMix) noexcept;
 
     enum class GlobalBypassState
     {
@@ -486,16 +524,15 @@ private:
 
     smart_ducking::LinkwitzRiley8Crossover crossover;
     smart_ducking::StereoSpectralLcrProcessor spectralLcrProcessor;
-    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> lowBandDelay;
-    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> highBandDelay;
-    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
-        mainLookaheadDelay;
-    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
-        dryMonitorDelay;
-    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
-        globalBypassDelay;
+    smart_ducking::PowerOfTwoDelayBuffer lowBandDelay;
+    smart_ducking::PowerOfTwoDelayBuffer highBandDelay;
+    smart_ducking::PowerOfTwoDelayBuffer mainLatencyDelay;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear>
         sidechainLookaheadDelay;
+    juce::AudioBuffer<float> staticSleepLookaheadBuffer;
+    juce::AudioBuffer<float> staticSleepSpatialOutputBuffer;
+    juce::AudioBuffer<float> staticSleepLfeBuffer;
+    juce::AudioBuffer<float> staticSleepSanitisedInputBuffer;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
         smoothedSidechainDelaySamples;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
@@ -526,13 +563,18 @@ private:
     std::atomic<bool> transportStateKnown { true };
     std::atomic<bool> processorPrepared { false };
     std::atomic<bool> globalBypassDspSleeping { false };
+    std::atomic<bool> editorVisualisationRequested { false };
+    std::atomic<bool> offlineRenderingActive { false };
     std::atomic<std::uint64_t> processBlockCounter { 0 };
     std::uint64_t lastTimerProcessBlockCounter = 0;
     int consecutiveQuiescentTimerTicks = 0;
     double currentSampleRate = 48000.0;
     int maximumLookaheadSamples = 0;
+    int currentStftLatencySamples = 0;
+    int consecutiveSilentSidechainSamples = 0;
     int globalBypassWarmupSamplesRemaining = 0;
     int crossoverWarmupSamplesRemaining = 0;
+    std::uint64_t staticSilentSidechainBlockCount = 0;
     bool crossoverPathSleeping = false;
     GlobalBypassState globalBypassState = GlobalBypassState::active;
 
