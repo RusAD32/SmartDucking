@@ -39,12 +39,12 @@ jobs:
       - name: Configure Release
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         run: >-
-          cmake -S . -B build-ci -G "Visual Studio 17 2022" -A x64
+          cmake --preset windows-vs2026
           -DSMART_DUCKING_BUILD_TESTS=OFF
       - name: Build Release VST3
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         run: >-
-          cmake --build build-ci --config Release
+          cmake --build --preset windows-release
           --target SmartDucking_VST3
           --parallel 4
       - name: Stage Windows VST3
@@ -54,7 +54,7 @@ jobs:
           Copy-Item `
             -Recurse `
             -Force `
-            "build-ci/SmartDucking_artefacts/Release/VST3/Smart Ducking.vst3" `
+            "build/windows-vs2026/SmartDucking_artefacts/Release/VST3/Smart Ducking.vst3" `
             "dist/Smart Ducking.vst3"
       - name: Upload Windows x64 VST3
         uses: actions/upload-artifact@v7
