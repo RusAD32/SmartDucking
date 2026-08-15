@@ -227,18 +227,9 @@ int SmartDuckingAudioProcessor::getCurrentProgram()
 void SmartDuckingAudioProcessor::setCurrentProgram (int index)
 {
     index = juce::jlimit (0, getNumPrograms() - 1, index);
-    const auto& preset = smart_ducking::factoryPresets[static_cast<size_t> (index)];
-
-    for (auto* parameter : getParameters())
-        if (parameter != nullptr && ! isGlobalBypassParameter (parameter))
-            parameter->setValueNotifyingHost (parameter->getDefaultValue());
-
-    for (const auto& value : preset.values)
-        if (auto* parameter = parameters.getParameter (value.parameterId))
-            parameter->setValueNotifyingHost (parameter->convertTo0to1 (value.rawValue));
-
+    applyPresetState (createFactoryPresetState (index));
     currentFactoryProgram.store (index, std::memory_order_relaxed);
-    captureComparisonSlot (currentComparisonSlot.load (std::memory_order_relaxed));
+    factoryProgramChangeCount.fetch_add (1, std::memory_order_relaxed);
 }
 
 const juce::String SmartDuckingAudioProcessor::getProgramName (int index)
@@ -246,6 +237,112 @@ const juce::String SmartDuckingAudioProcessor::getProgramName (int index)
     return index >= 0 && index < getNumPrograms()
         ? smart_ducking::factoryPresets[static_cast<size_t> (index)].name
         : juce::String {};
+}
+
+juce::ValueTree SmartDuckingAudioProcessor::createCurrentPresetState() const
+{
+    juce::ValueTree presetState ("SmartDuckingPreset");
+
+    for (auto* parameter : getParameters())
+    {
+        const auto* parameterWithId =
+            dynamic_cast<const juce::AudioProcessorParameterWithID*> (parameter);
+        const auto* rangedParameter = dynamic_cast<const juce::RangedAudioParameter*> (parameter);
+        if (parameterWithId == nullptr || rangedParameter == nullptr
+            || isGlobalBypassParameter (parameter)
+            || parameterWithId->paramID == smart_ducking::parameter_ids::monitorMode)
+            continue;
+
+        presetState.setProperty (parameterWithId->paramID,
+                                 rangedParameter->convertFrom0to1 (parameter->getValue()),
+                                 nullptr);
+    }
+
+    return presetState;
+}
+
+juce::ValueTree SmartDuckingAudioProcessor::createFactoryPresetState (int index) const
+{
+    index = juce::jlimit (
+        0, static_cast<int> (smart_ducking::factoryPresets.size()) - 1, index);
+    juce::ValueTree presetState ("SmartDuckingPreset");
+
+    for (auto* parameter : getParameters())
+    {
+        const auto* parameterWithId =
+            dynamic_cast<const juce::AudioProcessorParameterWithID*> (parameter);
+        const auto* rangedParameter = dynamic_cast<const juce::RangedAudioParameter*> (parameter);
+        if (parameterWithId == nullptr || rangedParameter == nullptr
+            || isGlobalBypassParameter (parameter)
+            || parameterWithId->paramID == smart_ducking::parameter_ids::monitorMode)
+            continue;
+
+        presetState.setProperty (parameterWithId->paramID,
+                                 rangedParameter->convertFrom0to1 (parameter->getDefaultValue()),
+                                 nullptr);
+    }
+
+    for (const auto& value : smart_ducking::factoryPresets[static_cast<size_t> (index)].values)
+        presetState.setProperty (value.parameterId, value.rawValue, nullptr);
+
+    return presetState;
+}
+
+bool SmartDuckingAudioProcessor::applyPresetState (const juce::ValueTree& presetState)
+{
+    if (! presetState.isValid() || ! presetState.hasType ("SmartDuckingPreset"))
+        return false;
+
+    for (auto* parameter : getParameters())
+    {
+        auto* parameterWithId = dynamic_cast<juce::AudioProcessorParameterWithID*> (parameter);
+        auto* rangedParameter = dynamic_cast<juce::RangedAudioParameter*> (parameter);
+        if (parameterWithId == nullptr || rangedParameter == nullptr
+            || isGlobalBypassParameter (parameter))
+            continue;
+
+        auto normalisedValue = parameter->getDefaultValue();
+        if (parameterWithId->paramID != smart_ducking::parameter_ids::monitorMode
+            && presetState.hasProperty (parameterWithId->paramID))
+        {
+            const auto rawValue = static_cast<float> (
+                presetState.getProperty (parameterWithId->paramID));
+            normalisedValue = rangedParameter->convertTo0to1 (rawValue);
+        }
+
+        parameter->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, normalisedValue));
+    }
+
+    captureComparisonSlot (currentComparisonSlot.load (std::memory_order_relaxed));
+    return true;
+}
+
+bool SmartDuckingAudioProcessor::doesPresetStateMatch (
+    const juce::ValueTree& presetState) const
+{
+    if (! presetState.isValid() || ! presetState.hasType ("SmartDuckingPreset"))
+        return false;
+
+    for (auto* parameter : getParameters())
+    {
+        const auto* parameterWithId =
+            dynamic_cast<const juce::AudioProcessorParameterWithID*> (parameter);
+        const auto* rangedParameter = dynamic_cast<const juce::RangedAudioParameter*> (parameter);
+        if (parameterWithId == nullptr || rangedParameter == nullptr
+            || isGlobalBypassParameter (parameter)
+            || parameterWithId->paramID == smart_ducking::parameter_ids::monitorMode)
+            continue;
+
+        auto expectedValue = parameter->getDefaultValue();
+        if (presetState.hasProperty (parameterWithId->paramID))
+            expectedValue = rangedParameter->convertTo0to1 (static_cast<float> (
+                presetState.getProperty (parameterWithId->paramID)));
+
+        if (std::abs (parameter->getValue() - expectedValue) > 1.0e-5f)
+            return false;
+    }
+
+    return true;
 }
 
 bool SmartDuckingAudioProcessor::isGlobalBypassParameter (
@@ -1829,7 +1926,7 @@ SmartDuckingAudioProcessor::createParameterLayout()
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
     layout.add (makeFloatParameter (crossoverHz, "Crossover", frequencyRange (50.0f, 180.0f), 92.0f, "Hz"));
-    layout.add (makeFloatParameter (duckDepthDb, "Duck Depth", { 0.0f, 18.0f, 0.01f }, 15.0f, "dB"));
+    layout.add (makeFloatParameter (duckDepthDb, "Duck Depth", { 0.0f, 18.0f, 0.01f }, 10.0f, "dB"));
     layout.add (makeFloatParameter (attackMs, "Attack", { 0.0f, 200.0f, 0.1f }, 50.0f, "ms"));
     layout.add (makeFloatParameter (holdMs, "Hold", { 0.0f, 500.0f, 0.1f }, 150.0f, "ms"));
     layout.add (makeFloatParameter (releaseMs, "Release", { 20.0f, 1000.0f, 0.1f, 0.45f }, 200.0f, "ms"));

@@ -248,7 +248,7 @@ LFE исключается из детектирования и обработк
 
 ### 7.4 Параметры
 
-- Duck Depth по умолчанию: 15 dB.
+- Duck Depth по умолчанию: 10 dB.
 - Регулируемый диапазон: 0–18 dB.
 - Все ячейки матрицы должны быть регулируемыми в диапазоне 0–100%.
 - Дакинг применяется только к верхней LCR-ветви оригинала.
@@ -415,7 +415,7 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 | Параметр | Диапазон | Default | Статус |
 |---|---:|---:|---|
 | Crossover | 50–180 Hz | 92 Hz | зафиксировано |
-| Duck Depth | 0–18 dB | 15 dB | зафиксировано |
+| Duck Depth | 0–18 dB | 10 dB | зафиксировано |
 | Attack | 0–200 ms | 50 ms | зафиксировано |
 | Hold | 0–500 ms | 150 ms | зафиксировано |
 | Release | 20–1000 ms | 200 ms | зафиксировано |
@@ -504,7 +504,7 @@ Weight Frequency/Gain/Q редактируются одной parametric node: d
 
 Для Main, Voice Surround и Output без Downmix доступны порядки ITU/SMPTE, REAPER/VLC, Film и DTS/MPEG-D. Меню открываются левой кнопкой на соответствующем meter и имеют видимый индикатор; столбцы и подписи meter следуют выбранному физическому порядку.
 
-Кнопки `A / B` хранят два parameter snapshot в project state, не меняя Global Bypass. Host program list содержит `Default`, `Gentle Dialogue`, `Voice Focus` и `Fast Announcer`. Выбранная Dynamics/Routing page и matrix-link также сохраняются.
+Кнопки `A / B` хранят два parameter snapshot в project state, не меняя Global Bypass. Между логотипом и A/B расположен selector с factory/user presets и командами Save Current As/Delete. User presets глобальны для машины, записываются атомарно в platform user application-data directory и включают processing/routing/channel-order и stage-bypass параметры. Global Bypass и временный Monitor Mode не входят в preset: recall сохраняет bypass и возвращает monitor в Normal. Project state самодостаточен и имеет приоритет независимо от наличия preset-файла. Host program list содержит `Default`, `Gentle Dialogue`, `Voice Focus` и `Fast Announcer`. Выбранная Dynamics/Routing page и matrix-link также сохраняются.
 
 DiagnosticLogger в diagnostic build публикует lock-free counters и записывает snapshot отдельным low-priority thread раз в 1000 ms. Production build отключает файловую диагностику; audio callback не выполняет I/O и блокировки.
 

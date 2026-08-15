@@ -217,6 +217,15 @@ public:
     [[nodiscard]] const juce::String getProgramName (int) override;
     void changeProgramName (int, const juce::String&) override {}
 
+    [[nodiscard]] juce::ValueTree createCurrentPresetState() const;
+    [[nodiscard]] juce::ValueTree createFactoryPresetState (int index) const;
+    bool applyPresetState (const juce::ValueTree& presetState);
+    [[nodiscard]] bool doesPresetStateMatch (const juce::ValueTree& presetState) const;
+    [[nodiscard]] std::uint64_t getFactoryProgramChangeCount() const noexcept
+    {
+        return factoryProgramChangeCount.load (std::memory_order_relaxed);
+    }
+
     void switchComparisonSlot (int slot);
     [[nodiscard]] int getComparisonSlot() const noexcept
     {
@@ -529,6 +538,7 @@ private:
     std::array<std::vector<float>, 2> comparisonSlots;
     std::atomic<int> currentComparisonSlot { 0 };
     std::atomic<int> currentFactoryProgram { 0 };
+    std::atomic<std::uint64_t> factoryProgramChangeCount { 0 };
 
     smart_ducking::LinkwitzRiley8Crossover crossover;
     smart_ducking::StereoSpectralLcrProcessor spectralLcrProcessor;

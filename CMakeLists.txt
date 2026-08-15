@@ -83,6 +83,8 @@ target_sources(SmartDucking PRIVATE
     Source/DiagnosticLogger.h
     Source/DiagnosticLogger.cpp
     Source/FactoryPresets.h
+    Source/UserPresetStore.h
+    Source/UserPresetStore.cpp
     Source/LcrDuckMatrix.h
     Source/LinkwitzRiley8Crossover.h
     Source/PceHistory.h
@@ -222,6 +224,8 @@ if (SMART_DUCKING_BUILD_TESTS)
         Source/DiagnosticLogger.h
         Source/DiagnosticLogger.cpp
         Source/FactoryPresets.h
+        Source/UserPresetStore.h
+        Source/UserPresetStore.cpp
         Source/LcrDuckMatrix.h
         Source/LinkwitzRiley8Crossover.h
         Source/PceHistory.h

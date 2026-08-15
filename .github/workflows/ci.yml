@@ -6,7 +6,7 @@ on:
 
 jobs:
   macos:
-    runs-on: macos-14
+    runs-on: [self-hosted, macOS, ARM64, repo-SmartDucking]
     steps:
       - uses: actions/checkout@v7
       - name: Configure Universal Release
@@ -33,7 +33,7 @@ jobs:
           retention-days: 30
 
   windows:
-    runs-on: windows-2022
+    runs-on: [self-hosted, Windows, X64, repo-SmartDucking]
     steps:
       - uses: actions/checkout@v7
       - name: Configure Release
@@ -65,26 +65,9 @@ jobs:
           retention-days: 30
 
   linux:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, repo-SmartDucking]
     steps:
       - uses: actions/checkout@v7
-      - name: Install JUCE Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends \
-            libasound2-dev \
-            libfontconfig1-dev \
-            libfreetype-dev \
-            libjack-jackd2-dev \
-            libx11-dev \
-            libxcomposite-dev \
-            libxcursor-dev \
-            libxext-dev \
-            libxinerama-dev \
-            libxrandr-dev \
-            libxrender-dev \
-            ladspa-sdk \
-            ninja-build
       - name: Configure Linux x64 Release
         run: >-
           cmake --preset linux-release-x64

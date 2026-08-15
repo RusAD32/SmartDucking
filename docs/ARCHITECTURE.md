@@ -136,6 +136,17 @@ The VST3 factory program list exposes four complete starting points: `Default`,
 restores all parameter defaults and then applies the preset overrides, so no
 values leak from the previously selected program.
 
+The header selector also discovers machine-global user presets through
+`UserPresetStore`. Each preset is a versioned XML `ValueTree` written atomically
+below the platform user-application-data directory. It stores raw values for all
+current processing, stage-bypass, format, routing, and channel-order parameters.
+Global bypass and transient Monitor Mode are excluded: recall preserves the
+former and resets the latter to Normal. Missing properties fall back to current
+parameter defaults, so an older user preset remains deterministic after new
+parameters are added. Invalid/corrupt files are ignored. Project state continues
+to serialize the actual APVTS values and therefore never depends on a user-preset
+file being present.
+
 The editor header has two comparison slots. Switching slots captures the current
 normalised value of every processing/routing parameter and restores the other snapshot. Both
 snapshots, the active slot, the current factory-program index, and the ordinary

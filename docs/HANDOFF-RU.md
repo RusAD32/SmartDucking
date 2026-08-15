@@ -288,6 +288,7 @@ Default matrix:
 | `Source/SpectralFrameSmoothers.h` | Переиспользуемое сглаживание mask shapes и пяти конечных matrix controls |
 | `Source/PowerOfTwoDelayBuffer.h` | Предвыделенная fixed integer-delay ring с mask wrap, двумя taps и block path |
 | `Source/FactoryPresets.h` | Имена и parameter overrides четырёх заводских starting points |
+| `Source/UserPresetStore.cpp/.h` | Атомарное глобальное хранилище пользовательских пресетов и валидация файлов |
 | `Source/LinkwitzRiley8Crossover.h` | Сглаживаемый LR8 из четырёх biquad stages на канал |
 | `Source/LcrDuckMatrix.h` | 5×5 defaults и maximum aggregation |
 | `Source/SidechainClassifier.h` | Silence/one-sided/dual-mono/stereo fast-path selection |
@@ -342,7 +343,15 @@ Lookahead находится в Dynamics. Единая группа стадий
 - выбранная Dynamics/Routing page и link сохраняются как UI-state;
 - Voice Format, три channel order, Downmix и Drop LFE используют короткие переходы.
 - кнопки `A / B` в header автоматически сохраняют покидаемый snapshot и восстанавливают выбранный; оба snapshot входят в project state;
+- selector между логотипом и A/B содержит factory/user presets, Save Current As и Delete;
 - host program list содержит `Default`, `Gentle Dialogue`, `Voice Focus` и `Fast Announcer`.
+
+User preset хранит processing/routing/channel-order и stage-bypass параметры в
+`OnWave/Smart Ducking/Presets` внутри platform user application-data directory.
+Global Bypass и временный Monitor Mode не сохраняются: recall сохраняет текущий
+Global Bypass и возвращает monitor в Normal. Отсутствующие в старом preset
+параметры получают актуальные defaults. Project state самодостаточен и имеет
+приоритет при открытии проекта, даже если соответствующий preset-файл удалён.
 
 ## 11. Сборка на новой машине
 

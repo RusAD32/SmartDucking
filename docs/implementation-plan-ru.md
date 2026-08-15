@@ -410,6 +410,7 @@ README, architecture, handoff и validation record синхронизирова�
 5. [x] Удалить подтверждённый dead UI/DSP code.
 6. [x] Синхронизировать всю документацию.
 7. [x] Добавить persistent A/B и factory presets после стабилизации parameter schema.
+8. [x] Добавить header selector и глобальные пользовательские presets с атомарными Save/Overwrite/Delete.
 
 ### RC2 — CPU/memory optimization и offline render — реализовано
 

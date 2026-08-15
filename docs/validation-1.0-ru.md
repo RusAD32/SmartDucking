@@ -16,7 +16,7 @@
 
 Debug arm64 и Universal Release собраны полностью. В обеих конфигурациях проходят:
 
-- `SmartDucking.Processor` — DSP, state, editor, routing, monitor modes, Global Bypass, PDC, presets/A-B, extracted smoothers/PCE history, random/boundary block sizes, finite output и realtime/offline-style numerical equivalence;
+- `SmartDucking.Processor` — DSP, state, editor, routing, monitor modes, Global Bypass, PDC, factory/user presets и A/B, атомарный save/load/overwrite/delete с отбраковкой повреждённых preset-файлов, extracted smoothers/PCE history, random/boundary block sizes, finite output и realtime/offline-style numerical equivalence;
 - `SmartDucking.VST3Factory` — загрузка готового binary, два различных class ID, имена/версия/категория, layouts `2 + 6 + 2` и `6 + 6 + 6`, ровно один параметр с VST3-флагом `kIsBypass`, processing, state, default latency и finite tail 96 000 samples при 48 kHz.
 
 Точная PDC автоматически проверяется при 44.1, 48, 88.2 и 96 kHz. Тест 88.2 kHz добавлен в Stage D. Для NORMAL отдельный transient/multitone regression test проверяет, что `Crossover Low + Crossover High` восстанавливают latency-aligned full-band STFT output: monitor использует ту же FFT-кривую, что и обработка, а не LR8-подстановку. RC2 также сравнивает sample/block sleeping paths, переход `sleep → Voice wake → release → sleep`, переменные размеры блоков и оба integer-delay tap. Debug arm64 проходит с AddressSanitizer и UndefinedBehaviorSanitizer.

@@ -13,6 +13,7 @@
 #include "SidechainEnvelope.h"
 #include "SpectralFrameSmoothers.h"
 #include "SpectralSuppressor.h"
+#include "UserPresetStore.h"
 
 namespace
 {
@@ -546,7 +547,7 @@ int main()
     const auto& state = processor.getParameterState();
     expect (approximatelyEqual (*state.getRawParameterValue (smart_ducking::parameter_ids::crossoverHz), 92.0f),
             "crossover default");
-    expect (approximatelyEqual (*state.getRawParameterValue (smart_ducking::parameter_ids::duckDepthDb), 15.0f),
+    expect (approximatelyEqual (*state.getRawParameterValue (smart_ducking::parameter_ids::duckDepthDb), 10.0f),
             "duck depth default");
     expect (approximatelyEqual (*state.getRawParameterValue (smart_ducking::parameter_ids::matrixLC), 0.25f),
             "L to C matrix default");
@@ -722,6 +723,103 @@ int main()
                             smart_ducking::parameter_ids::lookaheadMs),
                         20.0f),
                 "Fast Announcer factory program applies its documented values");
+
+        setParameter (presetProcessor, smart_ducking::parameter_ids::duckDepthDb, 6.5f);
+        setParameter (presetProcessor, smart_ducking::parameter_ids::widebandBypass, 1.0f);
+        setParameter (presetProcessor,
+                      smart_ducking::parameter_ids::monitorMode,
+                      static_cast<float> (smart_ducking::MonitorMode::crossoverHigh));
+        const auto userPresetState = presetProcessor.createCurrentPresetState();
+        expect (userPresetState.hasType ("SmartDuckingPreset")
+                    && ! userPresetState.hasProperty (
+                        smart_ducking::parameter_ids::globalBypass)
+                    && ! userPresetState.hasProperty (
+                        smart_ducking::parameter_ids::monitorMode),
+                "user preset snapshots omit global bypass and transient monitoring");
+
+        setParameter (presetProcessor, smart_ducking::parameter_ids::duckDepthDb, 17.0f);
+        setParameter (presetProcessor, smart_ducking::parameter_ids::widebandBypass, 0.0f);
+        expect (presetProcessor.applyPresetState (userPresetState)
+                    && approximatelyEqual (
+                        *presetProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::duckDepthDb),
+                        6.5f)
+                    && approximatelyEqual (
+                        *presetProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::widebandBypass),
+                        1.0f)
+                    && approximatelyEqual (
+                        *presetProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::monitorMode),
+                        static_cast<float> (smart_ducking::MonitorMode::normal))
+                    && approximatelyEqual (
+                        *presetProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::globalBypass),
+                        1.0f)
+                    && presetProcessor.doesPresetStateMatch (userPresetState),
+                "user preset recall restores processing, resets Monitor Mode, and preserves global bypass");
+
+        juce::ValueTree partialPreset ("SmartDuckingPreset");
+        partialPreset.setProperty (smart_ducking::parameter_ids::duckDepthDb, 4.0f, nullptr);
+        setParameter (presetProcessor, smart_ducking::parameter_ids::releaseMs, 900.0f);
+        expect (presetProcessor.applyPresetState (partialPreset)
+                    && approximatelyEqual (
+                        *presetProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::duckDepthDb),
+                        4.0f)
+                    && approximatelyEqual (
+                        *presetProcessor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::releaseMs),
+                        200.0f)
+                    && presetProcessor.doesPresetStateMatch (partialPreset),
+                "older partial presets use current defaults for parameters they do not contain");
+    }
+
+    {
+        const auto temporaryPresetDirectory =
+            juce::File::getCurrentWorkingDirectory()
+                .getNonexistentChildFile ("smart-ducking-preset-tests", {}, true);
+        const auto directoryResult = temporaryPresetDirectory.createDirectory();
+        expect (directoryResult.wasOk(), "temporary user-preset directory is created");
+
+        smart_ducking::UserPresetStore store (temporaryPresetDirectory);
+        SmartDuckingAudioProcessor presetProcessor;
+        setParameter (presetProcessor, smart_ducking::parameter_ids::duckDepthDb, 7.25f);
+        const auto alphaState = presetProcessor.createCurrentPresetState();
+        expect (store.save ("Zulu", alphaState).wasOk()
+                    && store.save ("Alpha", alphaState).wasOk(),
+                "user presets are written atomically");
+        const auto corruptPreset = temporaryPresetDirectory.getChildFile (
+            "corrupt.smartduckingpreset");
+        expect (corruptPreset.replaceWithText ("not xml"),
+                "corrupt preset fixture is written");
+
+        auto loadedPresets = store.loadAll();
+        expect (loadedPresets.size() == 2
+                    && loadedPresets[0].name == "Alpha"
+                    && loadedPresets[1].name == "Zulu"
+                    && approximatelyEqual (static_cast<float> (
+                        loadedPresets[0].state.getProperty (
+                            smart_ducking::parameter_ids::duckDepthDb)),
+                        7.25f),
+                "user preset discovery ignores corrupt files and sorts valid names");
+
+        setParameter (presetProcessor, smart_ducking::parameter_ids::duckDepthDb, 9.5f);
+        expect (store.save ("Alpha", presetProcessor.createCurrentPresetState()).wasOk(),
+                "saving an existing user preset replaces it");
+        loadedPresets = store.loadAll();
+        expect (loadedPresets.size() == 2
+                    && approximatelyEqual (static_cast<float> (
+                        loadedPresets[0].state.getProperty (
+                            smart_ducking::parameter_ids::duckDepthDb)),
+                        9.5f),
+                "replaced user preset contains the latest settings");
+
+        const auto removed = loadedPresets.size() > 1 && store.remove (loadedPresets[1]);
+        expect (removed && store.loadAll().size() == 1,
+                "a selected user preset can be deleted");
+        expect (temporaryPresetDirectory.deleteRecursively(),
+                "temporary user-preset directory is cleaned up");
     }
 
     {
@@ -733,7 +831,7 @@ int main()
                     && approximatelyEqual (
                         *comparisonProcessor.getParameterState().getRawParameterValue (
                             smart_ducking::parameter_ids::duckDepthDb),
-                        15.0f),
+                        10.0f),
                 "switching to B stores A and recalls the initial B snapshot");
         setParameter (comparisonProcessor, smart_ducking::parameter_ids::duckDepthDb, 12.0f);
         comparisonProcessor.switchComparisonSlot (0);
@@ -2676,8 +2774,8 @@ int main()
         };
 
         auto visible = inspectVisibleControls (*editor);
-        expect (visible.sliders == 7 && visible.comboBoxes == 3,
-                "Dynamics exposes all seven dynamics/spectral controls, two selectors, and Voice Format");
+        expect (visible.sliders == 7 && visible.comboBoxes == 4,
+                "Dynamics exposes seven controls plus preset, processing, FFT, and Voice selectors");
         expect (visible.toggleButtons == 0,
                 "Stereo Dynamics hides Surround-only output controls");
         expect (visible.linearSliders == 0, "Dynamics uses rotary controls");
@@ -2694,6 +2792,15 @@ int main()
                     && globalBypassButton->getClickingTogglesState()
                     && ! globalBypassButton->getBounds().isEmpty(),
                 "header exposes the icon-only global bypass beside activity status");
+        const auto* presetSelector = dynamic_cast<juce::ComboBox*> (
+            findComponentWithId (*editor, "presetChoice"));
+        const auto* comparisonA = findTextButton (*editor, "A");
+        expect (presetSelector != nullptr
+                    && presetSelector->getText().isNotEmpty()
+                    && ! presetSelector->getBounds().isEmpty()
+                    && comparisonA != nullptr
+                    && presetSelector->getRight() < comparisonA->getX(),
+                "preset selector is visible between branding and A/B comparison");
         expect (findTextButton (*editor, "LOW") != nullptr
                     && findTextButton (*editor, "HIGH") != nullptr
                     && findComponentWithId (*editor, "stageBypassButton0") != nullptr,
@@ -2701,8 +2808,8 @@ int main()
 
         activate ("ROUTING");
         visible = inspectVisibleControls (*editor);
-        expect (visible.sliders == 9 && visible.comboBoxes == 1,
-                "Stereo Routing exposes the active 3 by 3 matrix and Voice Format");
+        expect (visible.sliders == 9 && visible.comboBoxes == 2,
+                "Stereo Routing exposes the active 3 by 3 matrix plus preset and Voice selectors");
         expect (visible.linearSliders == 9, "Routing matrix uses linear sliders");
         expect (visible.haveBounds, "all visible Routing controls have a non-empty layout");
 
@@ -2770,8 +2877,8 @@ int main()
                 inspectSurroundEditor (*component.getChildComponent (child));
         };
         inspectSurroundEditor (*surroundEditor);
-        expect (visibleFormatComboCount == 3,
-                "Surround Dynamics exposes two processing selectors and Voice Format without Main Format");
+        expect (visibleFormatComboCount == 4,
+                "Surround Dynamics exposes preset, two processing selectors, and Voice Format without Main Format");
         expect (visibleSurroundToggleCount == 2,
                 "Surround header exposes Downmix and Drop LFE; VLC order moved to the meter menu");
         expect (downmixButton != nullptr && downmixButton->isEnabled(),

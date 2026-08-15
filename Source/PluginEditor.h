@@ -8,6 +8,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "PluginProcessor.h"
+#include "UserPresetStore.h"
 
 class SmartDuckingAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                                 private juce::Timer
@@ -62,6 +63,14 @@ private:
     int getVoiceSpatialChannelCount() const noexcept;
     int getMainSpatialChannelCount() const noexcept;
     void applyMatrixValues (const std::array<float, 25>&);
+    void rebuildPresetMenu();
+    void refreshSelectedPresetSnapshot();
+    void handlePresetSelection();
+    void updatePresetDisplay();
+    void showSavePresetDialog();
+    void saveUserPreset (const juce::String& name);
+    void confirmDeleteUserPreset();
+    [[nodiscard]] juce::ValueTree selectedPresetState() const;
 
     static void drawSignalMeter (juce::Graphics&,
                                  juce::Rectangle<float>,
@@ -80,6 +89,7 @@ private:
     std::unique_ptr<SpectrumPanel> spectrumPanel;
     juce::Image onWaveLogo;
 
+    juce::ComboBox presetChoice;
     std::array<juce::TextButton, 2> comparisonButtons {
         juce::TextButton { "A" }, juce::TextButton { "B" }
     };
@@ -131,6 +141,16 @@ private:
     std::unique_ptr<ButtonAttachment> dropLfeAttachment;
     std::unique_ptr<ButtonAttachment> globalBypassAttachment;
     std::array<std::unique_ptr<ButtonAttachment>, 3> stageBypassAttachments;
+
+    smart_ducking::UserPresetStore presetStore;
+    std::vector<smart_ducking::UserPreset> userPresets;
+    std::unique_ptr<juce::AlertWindow> presetNameDialog;
+    int selectedFactoryPreset = -1;
+    juce::String selectedUserPresetName;
+    juce::ValueTree selectedPresetSnapshot;
+    juce::String lastPresetDisplayText;
+    std::uint64_t lastFactoryProgramChangeCount = 0;
+    bool rebuildingPresetMenu = false;
 
     std::array<float, 5> displayedMainPeaks {};
     std::array<float, 5> displayedVoicePeaks {};

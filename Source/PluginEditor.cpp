@@ -29,6 +29,10 @@ const auto borderColour = juce::Colours::white.withAlpha (0.10f);
 const auto cardColour = juce::Colours::white.withAlpha (0.045f);
 const juce::Identifier bypassIconProperty { "bypassIcon" };
 const juce::Identifier crossoverMonitorBandProperty { "crossoverMonitorBand" };
+constexpr int factoryPresetItemBase = 1;
+constexpr int userPresetItemBase = 100;
+constexpr int savePresetItemId = 10000;
+constexpr int deletePresetItemId = 10001;
 
 float decaySignalPeak (float displayed, float current) noexcept
 {
@@ -1876,8 +1880,34 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     setLookAndFeel (onWaveLookAndFeel.get());
     tooltipWindow = std::make_unique<juce::TooltipWindow> (this, 850);
     setResizable (true, true);
-    setResizeLimits (820, 560, 1400, 900);
+    setResizeLimits (audioProcessor.isSurroundVariant() ? 960 : 820,
+                     560, 1400, 900);
     setSize (editorWidth, editorHeight);
+
+    addAndMakeVisible (presetChoice);
+    presetChoice.setComponentID ("presetChoice");
+    presetChoice.setJustificationType (juce::Justification::centred);
+    presetChoice.setTooltip (
+        "Load a factory or user preset, save the current settings, or delete a user preset.");
+    presetChoice.onChange = [this] { handlePresetSelection(); };
+    userPresets = presetStore.loadAll();
+    selectedFactoryPreset = audioProcessor.getCurrentProgram();
+    for (int index = 0; index < audioProcessor.getNumPrograms(); ++index)
+        if (audioProcessor.doesPresetStateMatch (
+                audioProcessor.createFactoryPresetState (index)))
+        {
+            selectedFactoryPreset = index;
+            break;
+        }
+    for (const auto& preset : userPresets)
+        if (audioProcessor.doesPresetStateMatch (preset.state))
+        {
+            selectedFactoryPreset = -1;
+            selectedUserPresetName = preset.name;
+            break;
+        }
+    lastFactoryProgramChangeCount = audioProcessor.getFactoryProgramChangeCount();
+    rebuildPresetMenu();
 
     addAndMakeVisible (globalBypassButton);
     globalBypassButton.getProperties().set (bypassIconProperty, true);
@@ -2137,6 +2167,262 @@ SmartDuckingAudioProcessorEditor::~SmartDuckingAudioProcessorEditor()
     setLookAndFeel (nullptr);
 }
 
+juce::ValueTree SmartDuckingAudioProcessorEditor::selectedPresetState() const
+{
+    return selectedPresetSnapshot;
+}
+
+void SmartDuckingAudioProcessorEditor::refreshSelectedPresetSnapshot()
+{
+    selectedPresetSnapshot = {};
+    if (selectedFactoryPreset >= 0
+        && selectedFactoryPreset < audioProcessor.getNumPrograms())
+    {
+        selectedPresetSnapshot = audioProcessor.createFactoryPresetState (
+            selectedFactoryPreset);
+        return;
+    }
+
+    for (const auto& preset : userPresets)
+        if (preset.name == selectedUserPresetName)
+        {
+            selectedPresetSnapshot = preset.state;
+            return;
+        }
+}
+
+void SmartDuckingAudioProcessorEditor::rebuildPresetMenu()
+{
+    refreshSelectedPresetSnapshot();
+    const juce::ScopedValueSetter<bool> rebuilding (rebuildingPresetMenu, true);
+    presetChoice.clear (juce::dontSendNotification);
+    presetChoice.addSectionHeading ("FACTORY PRESETS");
+    for (int index = 0; index < audioProcessor.getNumPrograms(); ++index)
+        presetChoice.addItem (audioProcessor.getProgramName (index),
+                              factoryPresetItemBase + index);
+
+    if (! userPresets.empty())
+    {
+        presetChoice.addSeparator();
+        presetChoice.addSectionHeading ("USER PRESETS");
+        for (size_t index = 0; index < userPresets.size(); ++index)
+            presetChoice.addItem (userPresets[index].name,
+                                  userPresetItemBase + static_cast<int> (index));
+    }
+
+    presetChoice.addSeparator();
+    presetChoice.addItem ("SAVE CURRENT AS...", savePresetItemId);
+    if (selectedUserPresetName.isNotEmpty())
+        presetChoice.addItem ("DELETE \"" + selectedUserPresetName + "\"...",
+                              deletePresetItemId);
+
+    lastPresetDisplayText.clear();
+    updatePresetDisplay();
+}
+
+void SmartDuckingAudioProcessorEditor::handlePresetSelection()
+{
+    if (rebuildingPresetMenu)
+        return;
+
+    const auto selectedId = presetChoice.getSelectedId();
+    if (selectedId >= factoryPresetItemBase
+        && selectedId < factoryPresetItemBase + audioProcessor.getNumPrograms())
+    {
+        selectedFactoryPreset = selectedId - factoryPresetItemBase;
+        selectedUserPresetName.clear();
+        audioProcessor.setCurrentProgram (selectedFactoryPreset);
+        lastFactoryProgramChangeCount = audioProcessor.getFactoryProgramChangeCount();
+        rebuildPresetMenu();
+        return;
+    }
+
+    const auto userIndex = selectedId - userPresetItemBase;
+    if (userIndex >= 0 && userIndex < static_cast<int> (userPresets.size()))
+    {
+        const auto& preset = userPresets[static_cast<size_t> (userIndex)];
+        if (audioProcessor.applyPresetState (preset.state))
+        {
+            selectedFactoryPreset = -1;
+            selectedUserPresetName = preset.name;
+        }
+        rebuildPresetMenu();
+        return;
+    }
+
+    if (selectedId == savePresetItemId)
+        showSavePresetDialog();
+    else if (selectedId == deletePresetItemId)
+        confirmDeleteUserPreset();
+
+    updatePresetDisplay();
+}
+
+void SmartDuckingAudioProcessorEditor::updatePresetDisplay()
+{
+    const auto state = selectedPresetState();
+    juce::String name;
+    if (selectedFactoryPreset >= 0
+        && selectedFactoryPreset < audioProcessor.getNumPrograms())
+        name = audioProcessor.getProgramName (selectedFactoryPreset);
+    else
+        name = selectedUserPresetName;
+
+    if (name.isEmpty())
+        name = "CUSTOM";
+    else if (! audioProcessor.doesPresetStateMatch (state))
+        name += " *";
+
+    if (name != lastPresetDisplayText)
+    {
+        const juce::ScopedValueSetter<bool> rebuilding (rebuildingPresetMenu, true);
+        presetChoice.setText (name, juce::dontSendNotification);
+        lastPresetDisplayText = name;
+    }
+}
+
+void SmartDuckingAudioProcessorEditor::showSavePresetDialog()
+{
+    if (presetNameDialog != nullptr)
+        return;
+
+    presetNameDialog = std::make_unique<juce::AlertWindow> (
+        "Save User Preset",
+        "Choose a name for the current Smart Ducking settings.",
+        juce::MessageBoxIconType::QuestionIcon,
+        this);
+    presetNameDialog->addTextEditor ("presetName", selectedUserPresetName,
+                                     "Name:");
+    presetNameDialog->addButton ("SAVE", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    presetNameDialog->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    auto safeThis = juce::Component::SafePointer<SmartDuckingAudioProcessorEditor> (this);
+    presetNameDialog->enterModalState (
+        true,
+        juce::ModalCallbackFunction::create ([safeThis] (int result)
+        {
+            if (safeThis == nullptr || safeThis->presetNameDialog == nullptr)
+                return;
+
+            const auto name = safeThis->presetNameDialog
+                                  ->getTextEditorContents ("presetName").trim();
+            safeThis->presetNameDialog.reset();
+            if (result == 1 && name.isNotEmpty())
+                safeThis->saveUserPreset (name);
+            else
+                safeThis->updatePresetDisplay();
+        }),
+        false);
+}
+
+void SmartDuckingAudioProcessorEditor::saveUserPreset (const juce::String& name)
+{
+    const auto existing = std::find_if (userPresets.begin(), userPresets.end(),
+                                        [&name] (const auto& preset)
+    {
+        return preset.name.equalsIgnoreCase (name);
+    });
+
+    if (existing != userPresets.end())
+    {
+        const auto existingName = existing->name;
+        auto safeThis = juce::Component::SafePointer<SmartDuckingAudioProcessorEditor> (this);
+        juce::AlertWindow::showAsync (
+            juce::MessageBoxOptions {}
+                .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                .withTitle ("Replace User Preset")
+                .withMessage ("A preset named \"" + existing->name
+                              + "\" already exists. Replace it?")
+                .withButton ("REPLACE")
+                .withButton ("CANCEL")
+                .withAssociatedComponent (this),
+            [safeThis, existingName] (int result)
+            {
+                if (safeThis != nullptr && result == 1)
+                {
+                    const auto saveResult = safeThis->presetStore.save (
+                        existingName, safeThis->audioProcessor.createCurrentPresetState());
+                    if (saveResult.wasOk())
+                    {
+                        safeThis->userPresets = safeThis->presetStore.loadAll();
+                        safeThis->selectedFactoryPreset = -1;
+                        safeThis->selectedUserPresetName = existingName;
+                        safeThis->rebuildPresetMenu();
+                    }
+                    else
+                        juce::AlertWindow::showMessageBoxAsync (
+                            juce::MessageBoxIconType::WarningIcon,
+                            "Could Not Save Preset", saveResult.getErrorMessage(), "OK",
+                            safeThis.getComponent());
+                }
+                else if (safeThis != nullptr)
+                    safeThis->updatePresetDisplay();
+            });
+        return;
+    }
+
+    const auto saveResult = presetStore.save (name, audioProcessor.createCurrentPresetState());
+    if (saveResult.failed())
+    {
+        juce::AlertWindow::showMessageBoxAsync (
+            juce::MessageBoxIconType::WarningIcon,
+            "Could Not Save Preset", saveResult.getErrorMessage(), "OK", this);
+        updatePresetDisplay();
+        return;
+    }
+
+    userPresets = presetStore.loadAll();
+    selectedFactoryPreset = -1;
+    selectedUserPresetName = name;
+    rebuildPresetMenu();
+}
+
+void SmartDuckingAudioProcessorEditor::confirmDeleteUserPreset()
+{
+    if (selectedUserPresetName.isEmpty())
+        return;
+
+    const auto name = selectedUserPresetName;
+    auto safeThis = juce::Component::SafePointer<SmartDuckingAudioProcessorEditor> (this);
+    juce::AlertWindow::showAsync (
+        juce::MessageBoxOptions {}
+            .withIconType (juce::MessageBoxIconType::WarningIcon)
+            .withTitle ("Delete User Preset")
+            .withMessage ("Delete \"" + name + "\"? This cannot be undone.")
+            .withButton ("DELETE")
+            .withButton ("CANCEL")
+            .withAssociatedComponent (this),
+        [safeThis, name] (int result)
+        {
+            if (safeThis == nullptr)
+                return;
+
+            if (result == 1)
+            {
+                const auto preset = std::find_if (
+                    safeThis->userPresets.begin(), safeThis->userPresets.end(),
+                    [&name] (const auto& candidate) { return candidate.name == name; });
+                const auto removed = preset == safeThis->userPresets.end()
+                    || safeThis->presetStore.remove (*preset);
+                if (! removed)
+                {
+                    juce::AlertWindow::showMessageBoxAsync (
+                        juce::MessageBoxIconType::WarningIcon,
+                        "Could Not Delete Preset",
+                        "The preset file could not be deleted.",
+                        "OK", safeThis.getComponent());
+                }
+                else
+                {
+                    safeThis->userPresets = safeThis->presetStore.loadAll();
+                    safeThis->selectedUserPresetName.clear();
+                    safeThis->selectedFactoryPreset =
+                        safeThis->audioProcessor.getCurrentProgram();
+                }
+            }
+            safeThis->rebuildPresetMenu();
+        });
+}
+
 SmartDuckingAudioProcessorEditor::ParameterControl&
 SmartDuckingAudioProcessorEditor::addSliderControl (
     juce::Component& page,
@@ -2239,8 +2525,8 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
                              0.62f);
 
     constexpr float pluginLogoX = static_cast<float> (titleX + titleWidth + 6);
-    const auto firstHeaderControlX = comparisonButtons[0].getX() > 0
-        ? comparisonButtons[0].getX() : voiceFormatLabel.getX();
+    const auto firstHeaderControlX = presetChoice.getX() > 0
+        ? presetChoice.getX() : comparisonButtons[0].getX();
     const auto pluginLogoRight = juce::jmax (pluginLogoX + 24.0f,
                                               static_cast<float> (firstHeaderControlX - 8));
     const auto pluginLogoWidth = juce::jlimit (24.0f, 62.0f,
@@ -2413,6 +2699,10 @@ void SmartDuckingAudioProcessorEditor::resized()
     placeHeaderControl (comparisonButtons[1], 32, 32);
     header.removeFromRight (3);
     placeHeaderControl (comparisonButtons[0], 32, 32);
+    header.removeFromRight (8);
+    const auto presetWidth = audioProcessor.isSurroundVariant()
+        ? juce::jlimit (110, 150, getWidth() - 850) : 150;
+    placeHeaderControl (presetChoice, presetWidth, 36);
 
     auto stageRow = bounds.removeFromTop (54).reduced (12, 5);
     stageControlPanel.setBounds (stageRow);
@@ -2822,6 +3112,17 @@ void SmartDuckingAudioProcessorEditor::resetAudioVisuals()
 
 void SmartDuckingAudioProcessorEditor::timerCallback()
 {
+    const auto factoryProgramChangeCount = audioProcessor.getFactoryProgramChangeCount();
+    if (factoryProgramChangeCount != lastFactoryProgramChangeCount)
+    {
+        lastFactoryProgramChangeCount = factoryProgramChangeCount;
+        selectedFactoryPreset = audioProcessor.getCurrentProgram();
+        selectedUserPresetName.clear();
+        rebuildPresetMenu();
+    }
+    else
+        updatePresetDisplay();
+
     const auto offlineRendering = audioProcessor.isOfflineRenderingActive();
 
     if (offlineRendering != offlineRenderingDisplayed)

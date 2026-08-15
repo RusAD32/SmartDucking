@@ -18,7 +18,7 @@ struct FactoryPreset
 
 inline constexpr std::array<FactoryPreset, 4> factoryPresets {
     FactoryPreset { "Default", {{
-        { "duckDepthDb", 15.0f }, { "spectralAmountDb", 10.0f },
+        { "duckDepthDb", 10.0f }, { "spectralAmountDb", 10.0f },
         { "activityThresholdDb", -30.0f }, { "attackMs", 50.0f },
         { "holdMs", 150.0f }, { "releaseMs", 200.0f },
         { "lookaheadMs", 10.0f }, { "weightGainDb", 6.0f }
