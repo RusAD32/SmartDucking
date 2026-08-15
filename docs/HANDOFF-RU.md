@@ -479,7 +479,7 @@ cmake --preset macos-release-universal \
 cmake --build --preset macos-release-universal --target SmartDuckingPluginval
 ```
 
-Target запускает strictness 5 для готового bundle. Обычная сборка от pluginval не зависит; macOS/Windows/Linux GitHub Actions загружают фиксированную версию 1.0.4 и сохраняют validation output как artifact.
+Target запускает strictness 5 для готового bundle. Обычная сборка от pluginval не зависит. GitHub Actions намеренно выполняет только Release-сборку VST3 на macOS/Windows/Linux и публикует готовые bundle; unit/factory tests, pluginval и benchmark запускаются локально отдельным этапом валидации.
 
 ## 13. Realtime safety
 
@@ -508,7 +508,7 @@ Stages A–D завершены, блокирующих известных де�
 
 Ограничения текущего evidence:
 
-1. Локальная проверка этого snapshot выполнена на macOS; результаты Windows/Linux следует брать из конкретного CI run RC2.
+1. Локальная проверка этого snapshot выполнена на macOS. CI подтверждает только успешную Release-сборку и упаковку Windows/Linux; функциональную валидацию следует выполнять локально на целевой ОС.
 2. Ручной REAPER functional/UI smoke-test и offline render-performance test подтверждены пользователем. Полная listening matrix остаётся отдельной продуктовой приёмкой, а не unit-тестом.
 3. Нотаризация, installer и pluginval strictness 10 не являются обязательным baseline 1.0.
 4. Дальнейшие DSP-эксперименты из post-1.0 плана не должны менять 1.0 state/identity без migration.

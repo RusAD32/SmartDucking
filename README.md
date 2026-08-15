@@ -68,7 +68,7 @@ cmake --preset macos-release-universal \
 cmake --build --preset macos-release-universal --target SmartDuckingPluginval
 ```
 
-This runs the finished bundle at strictness 5. Normal configure, build, and test commands do not require pluginval. GitHub Actions runs pluginval, unit tests, and direct VST3 factory tests on macOS, Windows, and Linux. A release CPU matrix can be run with:
+This runs the finished bundle at strictness 5. Normal configure, build, and test commands do not require pluginval. GitHub Actions only builds and packages release VST3 artifacts; unit/factory tests, pluginval, and benchmarks remain explicit local validation steps. A release CPU matrix can be run with:
 
 ```sh
 cmake --build --preset macos-release-universal --target SmartDuckingBenchmark
@@ -97,7 +97,7 @@ Every successful GitHub Actions run publishes three 30-day downloadable artifact
 - `Smart-Ducking-VST3-Windows-x64`
 - `Smart-Ducking-VST3-Linux-x64`
 
-Each artifact contains the ready-to-install `Smart Ducking.vst3` bundle for that platform. pluginval reports remain available as the separate `pluginval-macos`, `pluginval-windows`, and `pluginval-linux` diagnostic artifacts.
+Each artifact contains the ready-to-install `Smart Ducking.vst3` bundle for that platform. CI does not run or publish unit/factory tests, pluginval, or benchmark results.
 
 ## Plugin identity
 
