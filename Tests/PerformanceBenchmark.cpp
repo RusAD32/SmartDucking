@@ -30,7 +30,8 @@ void runCase (smart_ducking::PluginVariant variant,
               int resolution,
               bool visualisationEnabled,
               Scenario scenario = Scenario::active,
-              bool offlineRendering = false)
+              bool offlineRendering = false,
+              bool surroundVoice = false)
 {
     constexpr double sampleRate = 48000.0;
     constexpr int blockSize = 512;
@@ -41,7 +42,7 @@ void runCase (smart_ducking::PluginVariant variant,
                   static_cast<float> (processingMode));
     setParameter (processor, smart_ducking::parameter_ids::fftResolution,
                   static_cast<float> (resolution));
-    if (variant == smart_ducking::PluginVariant::surround)
+    if (variant == smart_ducking::PluginVariant::surround || surroundVoice)
         setParameter (processor, smart_ducking::parameter_ids::voiceFormat, 1.0f);
     if (scenario == Scenario::stagesBypassed)
     {
@@ -120,6 +121,7 @@ void runCase (smart_ducking::PluginVariant variant,
               << '\t' << "x" << (1 << resolution)
               << '\t' << (visualisationEnabled ? "visualisation-on" : "visualisation-off")
               << (offlineRendering ? "-offline" : "")
+              << (surroundVoice ? "-surround-voice" : "")
               << '\t' << scenarioName
               << '\t' << std::fixed << std::setprecision (2)
               << realtimeFactor << "x realtime"
@@ -153,6 +155,14 @@ int main()
              1,
              true,
              Scenario::silentSidechain,
+             true);
+
+    runCase (smart_ducking::PluginVariant::stereo,
+             1,
+             1,
+             false,
+             Scenario::silentSidechain,
+             false,
              true);
 
     for (const auto variant : { smart_ducking::PluginVariant::stereo,

@@ -2125,6 +2125,7 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     setPage (currentPage);
     audioProcessor.setVisualisationFrameRate (meterRefreshHz);
     audioProcessor.notifyEditorOpened();
+    lastObservedProcessBlockCount = audioProcessor.getProcessBlockCount();
     startTimerHz (static_cast<int> (meterRefreshHz));
 }
 
@@ -2808,6 +2809,17 @@ void SmartDuckingAudioProcessorEditor::applyMatrixValues (const std::array<float
         matrixControls[index]->slider.setValue (values[index], juce::sendNotificationSync);
 }
 
+void SmartDuckingAudioProcessorEditor::resetAudioVisuals()
+{
+    displayedMainPeaks.fill (0.0f);
+    displayedVoicePeaks.fill (0.0f);
+    displayedOutputPeaks.fill (0.0f);
+    displayedReductionDb.fill (0.0f);
+    displayedSpectralDb.fill (0.0f);
+    duckingIndicatorActive = false;
+    repaint();
+}
+
 void SmartDuckingAudioProcessorEditor::timerCallback()
 {
     const auto offlineRendering = audioProcessor.isOfflineRenderingActive();
@@ -2825,7 +2837,13 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
         editorVisualisationActive = shouldVisualise;
 
         if (editorVisualisationActive)
+        {
+            resetAudioVisuals();
             audioProcessor.notifyEditorOpened();
+            lastObservedProcessBlockCount = audioProcessor.getProcessBlockCount();
+            waitingForFreshAudioBlock = true;
+            audioVisualsSuppressed = true;
+        }
         else
             audioProcessor.notifyEditorClosed();
     }
@@ -2838,6 +2856,22 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
 #endif
     audioProcessor.notifyEditorTimer();
 
+    const auto processBlockCount = audioProcessor.getProcessBlockCount();
+    const auto receivedFreshAudioBlock = processBlockCount
+                                      != lastObservedProcessBlockCount;
+    lastObservedProcessBlockCount = processBlockCount;
+
+    if (receivedFreshAudioBlock)
+        waitingForFreshAudioBlock = false;
+
+    const auto suppressAudioVisuals = waitingForFreshAudioBlock
+        || (audioProcessor.isAudioCallbackQuiescent() && ! receivedFreshAudioBlock);
+
+    if (suppressAudioVisuals && ! audioVisualsSuppressed)
+        resetAudioVisuals();
+
+    audioVisualsSuppressed = suppressAudioVisuals;
+
     if (audioProcessor.isSurroundVariant())
     {
         if (const auto* downmix = audioProcessor.getParameterState().getRawParameterValue (
@@ -2849,41 +2883,40 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
         || getMainSpatialChannelCount() != displayedMatrixColumns)
         layoutMatrix();
 
-    const std::array<float, 5> mainPeaks {
-        audioProcessor.getMainInputPeakLeft(),
-        audioProcessor.getMainInputPeakCentre(),
-        audioProcessor.getMainInputPeakRight(),
-        audioProcessor.getMainInputPeakLeftSurround(),
-        audioProcessor.getMainInputPeakRightSurround()
-    };
-    const std::array<float, 5> voicePeaks {
-        audioProcessor.getSidechainPeakLeft(),
-        audioProcessor.getSidechainPeakCentre(),
-        audioProcessor.getSidechainPeakRight(),
-        audioProcessor.getSidechainPeakLeftSurround(),
-        audioProcessor.getSidechainPeakRightSurround()
-    };
-    const std::array<float, 5> outputPeaks {
-        audioProcessor.getOutputPeakLeft(),
-        audioProcessor.getOutputPeakCentre(),
-        audioProcessor.getOutputPeakRight(),
-        audioProcessor.getOutputPeakLeftSurround(),
-        audioProcessor.getOutputPeakRightSurround()
-    };
-    const std::array<float, 5> wideReduction {
-        audioProcessor.getGainReductionLeftDb(),
-        audioProcessor.getGainReductionCentreDb(),
-        audioProcessor.getGainReductionRightDb(),
-        audioProcessor.getGainReductionLeftSurroundDb(),
-        audioProcessor.getGainReductionRightSurroundDb()
-    };
-    const std::array<float, 5> spectralReduction {
-        audioProcessor.getSpectralReductionLeftDb(),
-        audioProcessor.getSpectralReductionCentreDb(),
-        audioProcessor.getSpectralReductionRightDb(),
-        audioProcessor.getSpectralReductionLeftSurroundDb(),
-        audioProcessor.getSpectralReductionRightSurroundDb()
-    };
+    auto mainPeaks = std::array<float, 5> {};
+    auto voicePeaks = std::array<float, 5> {};
+    auto outputPeaks = std::array<float, 5> {};
+    auto wideReduction = std::array<float, 5> {};
+    auto spectralReduction = std::array<float, 5> {};
+
+    if (! suppressAudioVisuals)
+    {
+        mainPeaks = { audioProcessor.getMainInputPeakLeft(),
+                      audioProcessor.getMainInputPeakCentre(),
+                      audioProcessor.getMainInputPeakRight(),
+                      audioProcessor.getMainInputPeakLeftSurround(),
+                      audioProcessor.getMainInputPeakRightSurround() };
+        voicePeaks = { audioProcessor.getSidechainPeakLeft(),
+                       audioProcessor.getSidechainPeakCentre(),
+                       audioProcessor.getSidechainPeakRight(),
+                       audioProcessor.getSidechainPeakLeftSurround(),
+                       audioProcessor.getSidechainPeakRightSurround() };
+        outputPeaks = { audioProcessor.getOutputPeakLeft(),
+                        audioProcessor.getOutputPeakCentre(),
+                        audioProcessor.getOutputPeakRight(),
+                        audioProcessor.getOutputPeakLeftSurround(),
+                        audioProcessor.getOutputPeakRightSurround() };
+        wideReduction = { audioProcessor.getGainReductionLeftDb(),
+                          audioProcessor.getGainReductionCentreDb(),
+                          audioProcessor.getGainReductionRightDb(),
+                          audioProcessor.getGainReductionLeftSurroundDb(),
+                          audioProcessor.getGainReductionRightSurroundDb() };
+        spectralReduction = { audioProcessor.getSpectralReductionLeftDb(),
+                              audioProcessor.getSpectralReductionCentreDb(),
+                              audioProcessor.getSpectralReductionRightDb(),
+                              audioProcessor.getSpectralReductionLeftSurroundDb(),
+                              audioProcessor.getSpectralReductionRightSurroundDb() };
+    }
 
     for (size_t channel = 0; channel < displayedMainPeaks.size(); ++channel)
     {
@@ -2907,7 +2940,8 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
         comparisonButtons[slot].setToggleState (
             static_cast<int> (slot) == comparisonSlot,
             juce::dontSendNotification);
-    const auto heavyPathActive = audioProcessor.isHeavyPathActive();
+    const auto heavyPathActive = ! suppressAudioVisuals
+                              && audioProcessor.isHeavyPathActive();
     const auto duckingStateChanged = heavyPathActive != duckingIndicatorActive;
     duckingIndicatorActive = heavyPathActive;
 
@@ -2915,18 +2949,21 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
     const auto leftMeterWidth = juce::jmax (108.0f, spectrum.getX() - 24.0f);
     const auto rightMeterX = spectrum.getRight() + 8.0f;
     const auto rightMeterWidth = static_cast<float> (getWidth()) - rightMeterX - 12.0f;
-    repaint (juce::Rectangle<float> (12.0f,
-                                     spectrum.getY(),
-                                     leftMeterWidth,
-                                     spectrum.getHeight())
-                 .expanded (2.0f)
-                 .toNearestInt());
-    repaint (juce::Rectangle<float> (rightMeterX,
-                                     spectrum.getY(),
-                                     rightMeterWidth,
-                                     spectrum.getHeight())
-                 .expanded (2.0f)
-                 .toNearestInt());
+    if (! suppressAudioVisuals)
+    {
+        repaint (juce::Rectangle<float> (12.0f,
+                                         spectrum.getY(),
+                                         leftMeterWidth,
+                                         spectrum.getHeight())
+                     .expanded (2.0f)
+                     .toNearestInt());
+        repaint (juce::Rectangle<float> (rightMeterX,
+                                         spectrum.getY(),
+                                         rightMeterWidth,
+                                         spectrum.getHeight())
+                     .expanded (2.0f)
+                     .toNearestInt());
+    }
 
     if (duckingStateChanged)
         repaint (duckingLampBounds.getUnion (activityStatusBounds).expanded (6.0f).toNearestInt());

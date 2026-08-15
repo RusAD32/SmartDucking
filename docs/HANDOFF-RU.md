@@ -274,9 +274,9 @@ Default matrix:
 
 ### 7.6 Sleep/wake
 
-При тишине sidechain предвыделенная Main history возвращает точный latency-aligned dry signal напрямую: windowing, overlap-add, FFT, PCE, prominence, mask и inverse FFT спят. Для статичного Surround/NORMAL с закрытой визуализацией RC2 дополнительно копирует history блоками. После исчезновения Voice тяжёлый путь остаётся активен до завершения hold, release и overlap-add tail; при пробуждении сохранённой истории достаточно, чтобы не потерять начало реплики.
+При тишине sidechain предвыделенная Main history возвращает точный latency-aligned dry signal напрямую: windowing, overlap-add, FFT, PCE, prominence, mask и inverse FFT спят. Для статичных Stereo/NORMAL и Surround/NORMAL с закрытой визуализацией history и fixed delays продвигаются блоками; после дренирования Voice delay/history также полностью пропускаются surround-remap и посэмпловая Voice orchestration. После исчезновения Voice тяжёлый путь остаётся активен до завершения hold, release и overlap-add tail; при пробуждении сохранённой истории достаточно, чтобы не потерять начало реплики.
 
-При закрытом editor spectrum visualization выключается. Offline render отключает spectrum и meters независимо от состояния editor; открытый editor в это время показывает статический `RENDERING`. Не выполнять display FFT только ради meter или диагностической анимации.
+При закрытом editor spectrum visualization выключается. Offline render отключает spectrum и meters независимо от состояния editor; открытый editor в это время показывает статический `RENDERING`. Overlay читает атомарное host/JUCE-состояние напрямую и снимается без ожидания следующего `processBlock`. Message-thread проверка уже существующего block counter определяет остановившийся audio callback примерно за 200 ms; stale meters и `ACTIVE` очищаются, а вновь открытый editor ждёт свежий блок. Не выполнять display FFT только ради meter или диагностической анимации.
 
 ## 8. Карта исходников
 

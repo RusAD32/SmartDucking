@@ -313,6 +313,7 @@ void SmartDuckingAudioProcessor::switchComparisonSlot (int slot)
 void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumExpectedSamplesPerBlock)
 {
     processorPrepared.store (false, std::memory_order_release);
+    audioCallbackQuiescent.store (false, std::memory_order_release);
     currentSampleRate = juce::jmax (1.0, sampleRate);
     crossover.prepare (sampleRate, crossoverParameter->load());
     spectralLcrProcessor.prepare (sampleRate);
@@ -472,6 +473,14 @@ void SmartDuckingAudioProcessor::releaseResources()
     processorPrepared.store (false, std::memory_order_release);
 }
 
+void SmartDuckingAudioProcessor::setNonRealtime (bool shouldBeNonRealtime) noexcept
+{
+    juce::AudioProcessor::setNonRealtime (shouldBeNonRealtime);
+    spectralLcrProcessor.setVisualisationEnabled (
+        editorVisualisationRequested.load (std::memory_order_acquire)
+            && ! shouldBeNonRealtime);
+}
+
 void SmartDuckingAudioProcessor::parameterChanged (const juce::String&, float)
 {
     configurationPending.store (true, std::memory_order_release);
@@ -511,6 +520,10 @@ void SmartDuckingAudioProcessor::timerCallback()
         consecutiveQuiescentTimerTicks = juce::jmin (
             quiescentTicksRequired, consecutiveQuiescentTimerTicks + 1);
     }
+
+    audioCallbackQuiescent.store (
+        consecutiveQuiescentTimerTicks >= quiescentTicksRequired,
+        std::memory_order_release);
 
     if (! processorPrepared.load (std::memory_order_acquire)
         || ! configurationPending.load (std::memory_order_acquire))
@@ -595,9 +608,56 @@ void SmartDuckingAudioProcessor::processStaticSilentSidechainBlock (
     float dropLfeMix) noexcept
 {
     const auto numSamples = output.getNumSamples();
+    const auto lookaheadCapacity = staticSleepLookaheadBuffer.getNumSamples();
+
+    if (! isSurroundVariant())
+    {
+        auto processed = 0;
+
+        while (processed < numSamples)
+        {
+            const auto blockSamples = juce::jmin (numSamples - processed,
+                                                 lookaheadCapacity);
+            std::array<const float*, 5> delayedMain {};
+            std::array<float*, 5> delayedOutput {};
+
+            for (int channel = 0; channel < 2; ++channel)
+            {
+                const auto spatialChannel = channel == 0 ? 0 : 2;
+                const auto* source = mainInput.getReadPointer (channel, processed);
+                auto* sanitisedInput = staticSleepSanitisedInputBuffer.getWritePointer (
+                    channel);
+                auto* lookaheadDelayed = staticSleepLookaheadBuffer.getWritePointer (
+                    spatialChannel);
+
+                for (int sample = 0; sample < blockSamples; ++sample)
+                    sanitisedInput[sample] = std::isfinite (source[sample])
+                        ? source[sample] : 0.0f;
+
+                mainLatencyDelay.processBlock (channel,
+                                                sanitisedInput,
+                                                lookaheadDelayed,
+                                                blockSamples,
+                                                maximumLookaheadSamples);
+                delayedMain[static_cast<size_t> (spatialChannel)] = lookaheadDelayed;
+                delayedOutput[static_cast<size_t> (spatialChannel)] =
+                    output.getWritePointer (channel, processed);
+            }
+
+            spectralLcrProcessor.processSilentSidechainBlock (delayedMain,
+                                                              delayedOutput,
+                                                              blockSamples,
+                                                              true);
+            processed += blockSamples;
+        }
+
+        globalBypassDspSleeping.store (false, std::memory_order_relaxed);
+        ++staticSilentSidechainBlockCount;
+        return;
+    }
+
     const auto& inputMap = smart_ducking::getPhysicalToCanonicalChannels (mainOrder.from);
     const auto& outputMap = smart_ducking::getPhysicalToCanonicalChannels (outputOrder.from);
-    const auto lookaheadCapacity = staticSleepLookaheadBuffer.getNumSamples();
     const auto lfeCapacity = staticSleepLfeBuffer.getNumSamples();
     auto processed = 0;
 
@@ -922,7 +982,6 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     midiMessages.clear();
     processBlockCounter.fetch_add (1, std::memory_order_relaxed);
     const auto offlineRendering = isNonRealtime();
-    offlineRenderingActive.store (offlineRendering, std::memory_order_release);
     spectralLcrProcessor.setVisualisationEnabled (
         editorVisualisationRequested.load (std::memory_order_acquire)
             && ! offlineRendering);
@@ -1099,8 +1158,7 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     spectralLcrProcessor.setParameters (spectralParameters);
 
-    const auto staticSilentSidechainCandidate = ! mainIsStereo
-        && useNormalMode
+    const auto staticSilentSidechainCandidate = useNormalMode
         && ! visualisationActive
         && ! diagnosticsActive
         && globalBypassState == GlobalBypassState::active

@@ -2126,12 +2126,88 @@ int main()
     }
 
     {
+        constexpr auto blockSize = 127;
+        constexpr auto silentBlocks = 80;
+        constexpr auto voiceBlocks = 96;
+        constexpr auto trailingBlocks = 112;
+        SmartDuckingAudioProcessor blockPathProcessor (
+            smart_ducking::PluginVariant::stereo);
+        SmartDuckingAudioProcessor samplePathProcessor (
+            smart_ducking::PluginVariant::stereo);
+        setParameter (blockPathProcessor,
+                      smart_ducking::parameter_ids::voiceFormat,
+                      1.0f);
+        setParameter (samplePathProcessor,
+                      smart_ducking::parameter_ids::voiceFormat,
+                      1.0f);
+        blockPathProcessor.prepareToPlay (48000.0, blockSize);
+        samplePathProcessor.prepareToPlay (48000.0, blockSize);
+        samplePathProcessor.notifyEditorOpened();
+        juce::AudioBuffer<float> blockBuffer (8, blockSize);
+        juce::AudioBuffer<float> sampleBuffer (8, blockSize);
+        juce::MidiBuffer blockMidi;
+        juce::MidiBuffer sampleMidi;
+        auto processorPathsMatch = true;
+        auto maximumProcessorPathError = 0.0f;
+        auto phase = 0.0;
+
+        for (int block = 0; block < silentBlocks + voiceBlocks + trailingBlocks; ++block)
+        {
+            blockBuffer.clear();
+            const auto voiceActive = block >= silentBlocks
+                                  && block < silentBlocks + voiceBlocks;
+
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto signal = 0.2f * static_cast<float> (std::sin (phase));
+                phase += 0.021;
+                blockBuffer.setSample (0, sample, signal);
+                blockBuffer.setSample (1, sample, 0.83f * signal);
+
+                if (voiceActive)
+                    for (int channel = 0; channel < 6; ++channel)
+                        blockBuffer.setSample (2 + channel,
+                                               sample,
+                                               0.35f - 0.02f * channel);
+            }
+
+            sampleBuffer.makeCopyOf (blockBuffer, true);
+            blockPathProcessor.processBlock (blockBuffer, blockMidi);
+            samplePathProcessor.processBlock (sampleBuffer, sampleMidi);
+
+            for (int channel = 0; channel < 2; ++channel)
+                for (int sample = 0; sample < blockSize; ++sample)
+                {
+                    const auto error = std::abs (
+                        blockBuffer.getSample (channel, sample)
+                        - sampleBuffer.getSample (channel, sample));
+                    processorPathsMatch = processorPathsMatch && error <= 3.0e-5f;
+                    maximumProcessorPathError = juce::jmax (maximumProcessorPathError,
+                                                            error);
+                }
+        }
+
+        expect (blockPathProcessor.getStaticSilentSidechainBlockCount() > 0,
+                "static stereo processing with surround Voice enters block sleep");
+        expect (blockPathProcessor.getProcessedFftFrameCount() > 0,
+                "surround Voice wakes stereo FFT processing after block sleep");
+        if (! processorPathsMatch)
+            std::cerr << "Stereo block/sample path maximum error: "
+                      << maximumProcessorPathError << '\n';
+        expect (processorPathsMatch,
+                "stereo block sleep, surround Voice wake, and return match sample path");
+    }
+
+    {
         SmartDuckingAudioProcessor offlineProcessor (
             smart_ducking::PluginVariant::surround);
         constexpr int offlineBlockSize = 128;
         offlineProcessor.prepareToPlay (48000.0, offlineBlockSize);
         offlineProcessor.notifyEditorOpened();
         offlineProcessor.setNonRealtime (true);
+        expect (offlineProcessor.isOfflineRenderingActive()
+                    && ! offlineProcessor.isSpectrumVisualisationActive(),
+                "offline rendering state reaches the UI before its first audio block");
         juce::AudioBuffer<float> offlineBuffer (12, offlineBlockSize);
         juce::MidiBuffer offlineMidi;
         offlineBuffer.clear();
@@ -2143,6 +2219,8 @@ int main()
                 "static 5.1 offline render uses the silent-sidechain block path");
 
         offlineProcessor.setNonRealtime (false);
+        expect (! offlineProcessor.isOfflineRenderingActive(),
+                "offline rendering state clears without requiring another audio block");
         offlineProcessor.processBlock (offlineBuffer, offlineMidi);
         expect (! offlineProcessor.isOfflineRenderingActive()
                     && offlineProcessor.isSpectrumVisualisationActive(),

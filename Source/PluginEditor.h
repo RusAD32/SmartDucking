@@ -54,6 +54,7 @@ private:
     void saveUiState();
     void restoreUiState();
     void mirrorMatrixEdit (size_t sourceIndex);
+    void resetAudioVisuals();
     void showChannelOrderMenu (const char* parameterId,
                                const juce::String& title,
                                juce::Rectangle<float> targetBounds,
@@ -146,6 +147,9 @@ private:
     bool duckingIndicatorActive = false;
     bool editorVisualisationActive = true;
     bool offlineRenderingDisplayed = false;
+    bool waitingForFreshAudioBlock = true;
+    bool audioVisualsSuppressed = true;
+    std::uint64_t lastObservedProcessBlockCount = 0;
     int displayedMatrixRows = 0;
     int displayedMatrixColumns = 0;
     bool applyingSymmetryEdit = false;

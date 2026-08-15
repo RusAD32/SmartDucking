@@ -61,7 +61,7 @@ RC2 использует отдельную power-of-two ring-buffer для фи
 - Surround NORMAL, активный 5.1 Voice: `0.75%` одного ядра (`132.51x realtime`);
 - Surround NORMAL, silent Voice/SLEEP: `0.05%` (`1889.78x`), FFT counters нулевые;
 - Surround steady Global Bypass: `0.12%` (`817.07x`), FFT counters нулевые;
-- Stereo NORMAL, silent Voice/SLEEP: `0.17%` (`597.85x`).
+- Stereo NORMAL, silent Surround Voice/SLEEP: `0.04%` (`2411.65x`) после добавления стерео block path; RC2 baseline до этой правки был `0.17%` (`597.85x`).
 
 Цифры имеют обычный разброс wall-clock microbenchmark. Реальный REAPER render дополнительно включает media decoder, host routing и остальной проект.
 
@@ -82,4 +82,4 @@ RC2 использует отдельную power-of-two ring-buffer для фи
 
 ## Realtime-safety audit
 
-В steady-state `processBlock` нет файловых операций, mutex/wait, создания FFT или resize больших контейнеров. Буферы, delay lines, histories и FFT geometry предвыделяются в prepare/configuration path. Фиксированные Main/PDC delay используют power-of-two storage и block copies; интерполируемый Voice Lookahead остаётся JUCE DelayLine. Обмен с editor и диагностикой ограничен atomics и fixed snapshots; закрытый editor и offline render отключают spectrum/meter capture. При offline render открытый editor показывает статический overlay `RENDERING`.
+В steady-state `processBlock` нет файловых операций, mutex/wait, создания FFT или resize больших контейнеров. Буферы, delay lines, histories и FFT geometry предвыделяются в prepare/configuration path. Фиксированные Main/PDC delay используют power-of-two storage и block copies; интерполируемый Voice Lookahead остаётся JUCE DelayLine. Обмен с editor и диагностикой ограничен atomics и fixed snapshots; закрытый editor и offline render отключают spectrum/meter capture. При offline render открытый editor показывает статический overlay `RENDERING`, который снимается сразу по host/JUCE state без дополнительного audio block. Reopen/pause stale-state устраняется ожиданием свежего block counter и quiescent-сбросом meters/`ACTIVE`.

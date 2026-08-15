@@ -139,6 +139,7 @@ public:
     using juce::AudioProcessor::processBlock;
     void prepareToPlay (double sampleRate, int maximumExpectedSamplesPerBlock) override;
     void releaseResources() override;
+    void setNonRealtime (bool) noexcept override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     [[nodiscard]] juce::AudioProcessorParameter* getBypassParameter() const override
     {
@@ -176,6 +177,14 @@ public:
     [[nodiscard]] bool isGlobalBypassDspSleeping() const noexcept
     {
         return globalBypassDspSleeping.load (std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint64_t getProcessBlockCount() const noexcept
+    {
+        return processBlockCounter.load (std::memory_order_acquire);
+    }
+    [[nodiscard]] bool isAudioCallbackQuiescent() const noexcept
+    {
+        return audioCallbackQuiescent.load (std::memory_order_acquire);
     }
     [[nodiscard]] std::uint64_t getStaticSilentSidechainBlockCount() const noexcept
     {
@@ -385,8 +394,7 @@ public:
     {
         diagnosticLogger.recordEditorOpened();
         editorVisualisationRequested.store (true, std::memory_order_release);
-        spectralLcrProcessor.setVisualisationEnabled (
-            ! offlineRenderingActive.load (std::memory_order_acquire));
+        spectralLcrProcessor.setVisualisationEnabled (! isNonRealtime());
     }
 
     void setVisualisationFrameRate (float framesPerSecond) noexcept
@@ -402,7 +410,7 @@ public:
     }
     [[nodiscard]] bool isOfflineRenderingActive() const noexcept
     {
-        return offlineRenderingActive.load (std::memory_order_acquire);
+        return isNonRealtime();
     }
     [[nodiscard]] bool isSpectrumVisualisationActive() const noexcept
     {
@@ -564,7 +572,7 @@ private:
     std::atomic<bool> processorPrepared { false };
     std::atomic<bool> globalBypassDspSleeping { false };
     std::atomic<bool> editorVisualisationRequested { false };
-    std::atomic<bool> offlineRenderingActive { false };
+    std::atomic<bool> audioCallbackQuiescent { true };
     std::atomic<std::uint64_t> processBlockCounter { 0 };
     std::uint64_t lastTimerProcessBlockCounter = 0;
     int consecutiveQuiescentTimerTicks = 0;

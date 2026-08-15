@@ -384,7 +384,7 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 - inverse FFT, windowing и spectral overlap-add;
 - spectrum, meters и GUI updates во время offline render.
 
-Выход продолжает идти через фазово и временно согласованный прямой history path с неизменной задержкой. В статичном Surround/NORMAL тракте history и fixed delays продвигаются блоками; power-of-two storage намеренно использует немного больше памяти ради дешёвого mask wrap.
+Выход продолжает идти через фазово и временно согласованный прямой history path с неизменной задержкой. В статичных Stereo/NORMAL и Surround/NORMAL трактах history и fixed delays продвигаются блоками; после дренирования Voice его delay и channel-order remap не выполняются. Power-of-two storage намеренно использует немного больше памяти ради дешёвого mask wrap.
 
 ### 11.2 WAKING
 
