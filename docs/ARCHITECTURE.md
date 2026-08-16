@@ -1,10 +1,10 @@
 # Architecture snapshot — v1.0
 
-This file records the implementation boundary of the `1.0.0-rc.2` release candidate. The implementation plan and executable tests define the detailed behavioural contract.
+This file records the implementation boundary of the `1.0.0-rc.3` release candidate. The implementation plan and executable tests define the detailed behavioural contract.
 
 ## Spectral/LCR engine
 
-In QUALITY, Main is split with a minimum-phase Linkwitz–Riley 8th-order crossover. Each branch uses four biquads because JUCE's ready-made Linkwitz–Riley processor provides up to a 4th-order response, rather than the required 8th order. The low branch is delayed and recombined without gain reduction. In NORMAL, the split uses complementary weights inside the shared STFT and the external LR8 remains asleep. One synchronised STFT engine analyses Main and Voice on the same windows. Both are decomposed into L/C/R first; Voice L/C/R detectors then control direct L/C/R spectral masks and the maximum-aggregated wideband matrix before Main is reconstructed.
+In QUALITY, Main is split with a selectable minimum-phase Linkwitz–Riley crossover: LR4/LR6/LR8/LR10/LR12 provide `24/36/48/60/72 dB/oct`, with LR8 (`48 dB/oct`) as the default. Each response is an exact doubled Butterworth prototype; LR6/LR10 include two first-order sections and invert the High branch so Low + High remains a flat all-pass sum. A second preallocated filter bank crossfades topology changes without allocation or reset clicks. The low branch is delayed and recombined without gain reduction. In NORMAL, the split uses cached magnitude-complementary order-4/6/8/10/12 weights inside the shared STFT and the external time-domain crossover remains asleep. One synchronised STFT engine analyses Main and Voice on the same windows. Both are decomposed into L/C/R first; Voice L/C/R detectors then control direct L/C/R spectral masks and the maximum-aggregated wideband matrix before Main is reconstructed.
 
 `SpectralSuppressor` remains the orchestration boundary, while persistent PCE state and reusable frame/control smoothing live in `PceHistory.h` and `SpectralFrameSmoothers.h`. The extraction is protected by characterization tests and does not change the signal path.
 
@@ -16,7 +16,7 @@ One `Smart Ducking.vst3` bundle registers two audio-module classes. `Smart Ducki
 
 ```text
 Stereo-class Main
-  → Linkwitz–Riley 8th-order crossover, default 92 Hz
+  → selectable Linkwitz–Riley crossover, default 92 Hz / 48 dB/oct
   ├→ delayed stereo low path
   └→ stereo high path
        → always-on Phantom Center Extraction
@@ -28,7 +28,7 @@ Stereo-class Main
 
 The Stereo Main path does not use dynamic mono/stereo classification. Surround Main bypasses PCE and processes its L/C/R/Ls/Rs high-band components directly; LFE is excluded and only latency-aligned.
 
-In NORMAL, low-band protection, high-band processing, LOW/HIGH monitoring, spectrum generation, and mask calculation share the same forward STFT. No duplicate crossover FFT or LR8 monitor substitute is run.
+In NORMAL, low-band protection, high-band processing, LOW/HIGH monitoring, spectrum generation, and mask calculation share the same forward STFT. Changing slope only rebuilds a cached complementary bin-weight table; no duplicate crossover FFT or time-domain monitor substitute is run.
 
 ## Main Phantom Center Extraction
 
@@ -106,11 +106,11 @@ During sidechain silence, preallocated per-channel sample rings keep Main histor
 
 The fixed Main Lookahead and full-PDC histories share one power-of-two ring with two integer taps. QUALITY low/high alignment uses the same mask-wrapped fixed-delay implementation. The small preallocated memory overhead removes duplicate Main writes, per-sample modulo division, and allocation from steady-state processing; only the continuously variable Voice Lookahead retains an interpolating JUCE delay line.
 
-Weighting-bell values are cached for the active FFT geometry and recalculated only when Weight Frequency/Gain/Q or that geometry changes. Stage bypass and monitor routing skip any LR8, detector, mask, or transform branch that is not needed for audible processing or an explicitly selected monitor.
+Weighting-bell values are cached for the active FFT geometry and recalculated only when Weight Frequency/Gain/Q or that geometry changes. Crossover FFT weights and the analyser curve are likewise cached until frequency, slope, or geometry changes. Stage bypass and monitor routing skip any time-domain crossover, detector, mask, or transform branch that is not needed for audible processing or an explicitly selected monitor.
 
 ## Stage routing and monitoring
 
-Three boolean host parameters bypass Crossover, Wideband, and Spectral independently. One choice parameter represents mutually exclusive Crossover Low/High, Wideband Solo/Delta, and Spectral Solo/Delta monitoring. Crossover Low/High use delayed complementary LR8 branches in QUALITY. In NORMAL they run through the already warm WOLA path and apply the exact complementary FFT crossover weights used by NORMAL processing, so monitoring matches its phase and transient response instead of substituting LR8. Both omit LFE and support live switching. Wideband and Spectral Delta subtract the selected wet result from an STFT-aligned dry Main path. Stage and monitor gains use 30 ms ramps, while all paths retain the configured STFT plus Lookahead-reserve latency.
+Three boolean host parameters bypass Crossover, Wideband, and Spectral independently. One choice parameter represents mutually exclusive Crossover Low/High, Wideband Solo/Delta, and Spectral Solo/Delta monitoring. Crossover Low/High use the selected delayed complementary Linkwitz–Riley branches in QUALITY. In NORMAL they run through the already warm WOLA path and apply the exact selected complementary FFT crossover weights used by NORMAL processing, so monitoring matches its phase and transient response instead of substituting a time-domain crossover. Both omit LFE and support live switching. Crossover Slope is a stored/automatable choice parameter; the analyser marker wheel changes it and displays the selected `dB/oct` value. States created before this parameter existed migrate to the `48 dB/oct` default. Wideband and Spectral Delta subtract the selected wet result from an STFT-aligned dry Main path. Stage and monitor gains use 30 ms ramps, while all paths retain the configured STFT plus Lookahead-reserve latency.
 
 A separate boolean is returned through JUCE's `getBypassParameter()` as the standard VST3 bypass control. It uses a 30 ms crossfade around all ducking stages and monitor modes while preserving the declared PDC. Main input remapping, forced downmix/Drop LFE, and surround output remapping remain active. Once the fade reaches bypass, the crossover, sidechain lookahead/detector, FFT/PCE, matrix, and monitor paths stop advancing; only the fixed latency and requested routing/downmix path runs. Leaving bypass runs that wet path silently for one full reported-latency interval before the 30 ms fade back, avoiding stale DSP output. Global bypass is stored in project state but is excluded from factory-program and A/B snapshot recall.
 
@@ -118,7 +118,7 @@ The spectral engine publishes its real heavy-path state through a lock-free atom
 
 Display frames and the analyser use the same fixed logarithmic 20 Hz–20 kHz frequency grid. At sample rates below 40 kHz, display bins above Nyquist remain empty while the visible axis still reaches 20 kHz. Weight Frequency uses the same 20 kHz upper limit, so its interactive curve cannot stop short of the displayed spectrum.
 
-When a host marks processing as non-realtime, spectrum capture and audio-thread meter collection are disabled even if the editor is open. The editor stops dynamic polling and draws one static `RENDERING` overlay until realtime processing resumes. The overlay reads JUCE's atomic host state directly rather than a `processBlock`-latched copy, so it clears even when the host sends no realtime block after rendering. A 20 Hz message-thread check of the existing audio-block counter marks callbacks quiescent after about 200 ms; meters and `ACTIVE` are then cleared, and a reopened editor waits for a fresh block before showing DSP state.
+When a host marks processing as non-realtime, spectrum capture and audio-thread meter collection are disabled even if the editor is open. The editor stops dynamic polling and draws one static `RENDERING` overlay until realtime processing resumes. The overlay reads JUCE's atomic host state directly rather than a `processBlock`-latched copy, so it clears even when the host sends no realtime block after rendering. A 20 Hz message-thread check of the existing audio-block counter marks callbacks quiescent after about 200 ms; meters and the active lamp are then cleared, and a reopened editor waits for a fresh block before showing DSP state.
 
 Voice Stereo/Surround interpretation, four-choice Main/Voice/Output channel order,
 forced downmix, and Drop LFE use 30 ms sample ramps. The orders are ITU/SMPTE,

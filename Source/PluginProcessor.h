@@ -7,7 +7,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
-#include "LinkwitzRiley8Crossover.h"
+#include "LinkwitzRileyCrossover.h"
 #include "DiagnosticLogger.h"
 #include "LcrDuckMatrix.h"
 #include "PluginVariant.h"
@@ -509,6 +509,7 @@ private:
     juce::AudioProcessorValueTreeState parameters;
     std::atomic<float>* duckDepthParameter = nullptr;
     std::atomic<float>* crossoverParameter = nullptr;
+    std::atomic<float>* crossoverSlopeParameter = nullptr;
     std::atomic<float>* attackParameter = nullptr;
     std::atomic<float>* holdParameter = nullptr;
     std::atomic<float>* releaseParameter = nullptr;
@@ -540,7 +541,7 @@ private:
     std::atomic<int> currentFactoryProgram { 0 };
     std::atomic<std::uint64_t> factoryProgramChangeCount { 0 };
 
-    smart_ducking::LinkwitzRiley8Crossover crossover;
+    smart_ducking::LinkwitzRileyCrossover crossover;
     smart_ducking::StereoSpectralLcrProcessor spectralLcrProcessor;
     smart_ducking::PowerOfTwoDelayBuffer lowBandDelay;
     smart_ducking::PowerOfTwoDelayBuffer highBandDelay;

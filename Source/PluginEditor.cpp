@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "BinaryData.h"
+#include "CrossoverMagnitude.h"
 #include "ParameterIds.h"
 
 namespace
@@ -29,6 +30,7 @@ const auto borderColour = juce::Colours::white.withAlpha (0.10f);
 const auto cardColour = juce::Colours::white.withAlpha (0.045f);
 const juce::Identifier bypassIconProperty { "bypassIcon" };
 const juce::Identifier crossoverMonitorBandProperty { "crossoverMonitorBand" };
+const juce::Identifier comboContextLabelProperty { "comboContextLabel" };
 constexpr int factoryPresetItemBase = 1;
 constexpr int userPresetItemBase = 100;
 constexpr int savePresetItemId = 10000;
@@ -67,6 +69,19 @@ void drawCard (juce::Graphics& graphics, juce::Rectangle<float> bounds, float co
     graphics.setColour (borderColour);
     graphics.drawRoundedRectangle (bounds.reduced (0.5f), corner, 1.0f);
 }
+
+class GlobalBypassPanel final : public juce::Component
+{
+public:
+    void paint (juce::Graphics& graphics) override
+    {
+        auto bounds = getLocalBounds().toFloat().reduced (0.5f);
+        graphics.setColour (backgroundSoftColour.withAlpha (0.78f));
+        graphics.fillRoundedRectangle (bounds, 7.0f);
+        graphics.setColour (primarySoftColour.withAlpha (0.26f));
+        graphics.drawRoundedRectangle (bounds, 7.0f, 1.0f);
+    }
+};
 
 void drawBypassIcon (juce::Graphics& graphics,
                      juce::Rectangle<float> bounds,
@@ -428,7 +443,7 @@ struct SmartDuckingAudioProcessorEditor::OnWaveLookAndFeel final : juce::LookAnd
                        int,
                        int,
                        int,
-                       juce::ComboBox&) override
+                       juce::ComboBox& box) override
     {
         auto bounds = juce::Rectangle<float> (0.0f, 0.0f,
                                               static_cast<float> (width),
@@ -446,12 +461,35 @@ struct SmartDuckingAudioProcessorEditor::OnWaveLookAndFeel final : juce::LookAnd
         arrow.lineTo (bounds.getRight() - 9.0f, centreY - 2.0f);
         graphics.setColour (secondaryTextColour);
         graphics.strokePath (arrow, juce::PathStrokeType (1.5f));
+
+        const auto contextLabel = box.getProperties()[comboContextLabelProperty].toString();
+
+        if (contextLabel.isNotEmpty())
+        {
+            auto labelBounds = bounds.toNearestInt().reduced (10, 0).withTrimmedRight (20);
+            labelBounds.setHeight (13);
+            labelBounds.setY (2);
+            graphics.setColour (mutedTextColour.withAlpha (0.82f));
+            graphics.setFont (juce::FontOptions { 7.5f, juce::Font::bold });
+            graphics.drawFittedText (contextLabel,
+                                     labelBounds,
+                                     juce::Justification::centredLeft,
+                                     1);
+        }
     }
 
     void positionComboBoxText (juce::ComboBox& box, juce::Label& label) override
     {
-        label.setBounds (box.getLocalBounds().reduced (10, 1).withTrimmedRight (20));
-        label.setFont (juce::FontOptions { 12.0f, juce::Font::bold });
+        auto textBounds = box.getLocalBounds().reduced (10, 1).withTrimmedRight (20);
+        const auto hasContextLabel =
+            box.getProperties()[comboContextLabelProperty].toString().isNotEmpty();
+
+        if (hasContextLabel)
+            textBounds = textBounds.withTrimmedTop (8);
+
+        label.setBounds (textBounds);
+        label.setFont (juce::FontOptions { hasContextLabel ? 10.5f : 12.0f,
+                                           juce::Font::bold });
         label.setColour (juce::Label::textColourId, textColour);
     }
 
@@ -722,11 +760,11 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
     SpectrumPanel (SmartDuckingAudioProcessor& newProcessor)
         : processor (newProcessor), state (newProcessor.getParameterState())
     {
+        setComponentID ("spectrumPanel");
         inputDb.fill (-90.0f);
         outputDb.fill (-90.0f);
         reductionDb.fill (0.0f);
         spectralMaskDb.fill (0.0f);
-        initialiseCrossoverTemplate();
         addChildComponent (markerEditor);
         markerEditor.setColour (juce::TextEditor::backgroundColourId, backgroundSoftColour);
         markerEditor.setColour (juce::TextEditor::textColourId, textColour);
@@ -1013,12 +1051,58 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
 
     void mouseExit (const juce::MouseEvent&) override
     {
+        crossoverWheelAccumulator = 0.0f;
         setMouseCursor (juce::MouseCursor::NormalCursor);
     }
 
     void mouseWheelMove (const juce::MouseEvent& event,
                          const juce::MouseWheelDetails& wheel) override
     {
+        if (isOverCrossoverDragArea (event.position))
+        {
+            if (auto* slope = state.getParameter (
+                    smart_ducking::parameter_ids::crossoverSlope))
+            {
+                const auto direction = wheel.deltaY != 0.0f ? wheel.deltaY : wheel.deltaX;
+
+                if (direction != 0.0f)
+                {
+                    if (crossoverWheelAccumulator * direction < 0.0f)
+                        crossoverWheelAccumulator = 0.0f;
+
+                    crossoverWheelAccumulator += direction;
+                    const auto now = juce::Time::getMillisecondCounterHiRes();
+
+                    // macOS trackpads report many very small smooth deltas.
+                    // Step on the first non-zero event, then rate-limit the
+                    // continuing gesture instead of requiring a large delta.
+                    if (wheel.isSmooth
+                        && now - lastCrossoverWheelStepMilliseconds < 120.0)
+                        return;
+
+                    const auto current = juce::roundToInt (
+                        slope->convertFrom0to1 (slope->getValue()));
+                    const auto next = juce::jlimit (
+                        0, 4, current + (crossoverWheelAccumulator > 0.0f ? 1 : -1));
+                    crossoverWheelAccumulator = 0.0f;
+                    lastCrossoverWheelStepMilliseconds = now;
+
+                    if (next != current)
+                    {
+                        slope->beginChangeGesture();
+                        slope->setValueNotifyingHost (slope->convertTo0to1 (
+                            static_cast<float> (next)));
+                        slope->endChangeGesture();
+                        repaint();
+                    }
+                }
+            }
+
+            return;
+        }
+
+        crossoverWheelAccumulator = 0.0f;
+
         if (! isNearWeightNode (event.position, 18.0f))
         {
             Component::mouseWheelMove (event, wheel);
@@ -1049,7 +1133,7 @@ private:
         "CROSSOVER", "LOW", "HIGH"
     };
 
-    static constexpr int crossoverTemplatePoints = 33;
+    static constexpr int crossoverCurvePoints = 257;
     static constexpr double staleSpectrumDelayMilliseconds = 120.0;
     static constexpr float staleSpectrumDecay = 0.34f;
 
@@ -1144,38 +1228,6 @@ private:
                            bounds.getY() + 2.0f);
     }
 
-    void initialiseCrossoverTemplate() noexcept
-    {
-        constexpr auto halfSpanInOctaves = 1.2f;
-
-        for (int point = 0; point < crossoverTemplatePoints; ++point)
-        {
-            const auto normal = static_cast<float> (point)
-                              / static_cast<float> (crossoverTemplatePoints - 1);
-            const auto octaveOffset = juce::jmap (normal,
-                                                  -halfSpanInOctaves,
-                                                  halfSpanInOctaves);
-            const auto ratio = std::pow (2.0f, octaveOffset);
-            auto lowPassDb = -20.0f * std::log10 (1.0f + std::pow (ratio, 8.0f));
-            auto highPassDb = -20.0f * std::log10 (
-                1.0f + std::pow (1.0f / ratio, 8.0f));
-
-            if (point == 0)
-            {
-                lowPassDb = 0.0f;
-                highPassDb = spectrumFloorDb;
-            }
-            else if (point == crossoverTemplatePoints - 1)
-            {
-                lowPassDb = spectrumFloorDb;
-                highPassDb = 0.0f;
-            }
-
-            crossoverLowTemplateDb[static_cast<size_t> (point)] = lowPassDb;
-            crossoverHighTemplateDb[static_cast<size_t> (point)] = highPassDb;
-        }
-    }
-
     void updateCrossoverGeometry (juce::Rectangle<float> bounds)
     {
         const auto* parameter = state.getParameter (
@@ -1185,32 +1237,45 @@ private:
             return;
 
         const auto frequency = parameter->convertFrom0to1 (parameter->getValue());
+        const auto* slopeParameter = state.getParameter (
+            smart_ducking::parameter_ids::crossoverSlope);
+        const auto slopeIndex = slopeParameter != nullptr
+            ? juce::roundToInt (slopeParameter->convertFrom0to1 (
+                slopeParameter->getValue()))
+            : 2;
+        const auto slopeDbPerOctave = 24 + 12 * juce::jlimit (0, 4, slopeIndex);
         const auto maximumDisplayFrequency = getMaximumDisplayFrequency();
 
         if (std::abs (frequency - cachedCrossoverFrequency) < 0.001f
+            && slopeDbPerOctave == cachedCrossoverSlopeDbPerOctave
             && std::abs (maximumDisplayFrequency
                          - cachedMaximumDisplayFrequency) < 0.001f
             && bounds == cachedCrossoverBounds)
             return;
 
         cachedCrossoverFrequency = frequency;
+        cachedCrossoverSlopeDbPerOctave = slopeDbPerOctave;
         cachedMaximumDisplayFrequency = maximumDisplayFrequency;
         cachedCrossoverBounds = bounds;
-        const auto centreX = frequencyToX (frequency, bounds);
-        constexpr auto halfSpanInOctaves = 1.2f;
-        const auto pixelsPerOctave = bounds.getWidth()
-                                   / (std::log (maximumDisplayFrequency / 20.0f)
-                                      / std::log (2.0f));
-        const auto halfWidth = juce::jmax (1.0f, pixelsPerOctave * halfSpanInOctaves);
 
-        for (int point = 0; point < crossoverTemplatePoints; ++point)
+        for (int point = 0; point < crossoverCurvePoints; ++point)
         {
             const auto normal = static_cast<float> (point)
-                              / static_cast<float> (crossoverTemplatePoints - 1);
-            const auto x = centreX + juce::jmap (normal, -halfWidth, halfWidth);
+                              / static_cast<float> (crossoverCurvePoints - 1);
+            const auto curveFrequency = 20.0f
+                                      * std::pow (maximumDisplayFrequency / 20.0f,
+                                                  normal);
+            const auto highMagnitude = smart_ducking::crossoverHighMagnitude (
+                curveFrequency, frequency, static_cast<float> (slopeDbPerOctave));
+            const auto lowMagnitude = 1.0f - highMagnitude;
+            const auto lowPassDb = juce::Decibels::gainToDecibels (
+                lowMagnitude, spectrumFloorDb);
+            const auto highPassDb = juce::Decibels::gainToDecibels (
+                highMagnitude, spectrumFloorDb);
+            const auto x = bounds.getX() + normal * bounds.getWidth();
             const auto index = static_cast<size_t> (point);
-            crossoverLowPoints[index] = { x, dbToY (crossoverLowTemplateDb[index], bounds) };
-            crossoverHighPoints[index] = { x, dbToY (crossoverHighTemplateDb[index], bounds) };
+            crossoverLowPoints[index] = { x, dbToY (lowPassDb, bounds) };
+            crossoverHighPoints[index] = { x, dbToY (highPassDb, bounds) };
         }
 
         const auto rebuildPath = [&] (juce::Path& path, const auto& points)
@@ -1478,17 +1543,25 @@ private:
 
                 graphics.setColour (secondaryTextColour);
                 graphics.setFont (juce::FontOptions { 10.5f, juce::Font::bold });
-                auto labelBounds = juce::Rectangle<float> (x - 62.0f,
+                const auto labelWidth = crossover ? 206.0f : 124.0f;
+                auto labelBounds = juce::Rectangle<float> (x - 0.5f * labelWidth,
                                                             crossover ? bounds.getY() + 1.0f
                                                                       : bounds.getBottom() - 20.0f,
-                                                            124.0f,
+                                                            labelWidth,
                                                             20.0f);
                 labelBounds.setX (juce::jlimit (bounds.getX(),
                                                 bounds.getRight() - labelBounds.getWidth(),
                                                 labelBounds.getX()));
                 markerLabelBounds[markerIndex] = labelBounds;
-                graphics.drawText (juce::String (markerNames[markerIndex]) + "  "
-                                       + frequencyText (frequency),
+                auto markerText = juce::String (markerNames[markerIndex]) + "  "
+                                + frequencyText (frequency);
+
+                if (crossover)
+                    markerText += " - "
+                               + juce::String (cachedCrossoverSlopeDbPerOctave)
+                               + " dB/oct";
+
+                graphics.drawText (markerText,
                                    labelBounds,
                                    juce::Justification::centred);
             }
@@ -1545,6 +1618,13 @@ private:
                                          float radius) const
     {
         return position.getDistanceFrom (weightNodePosition()) <= radius;
+    }
+
+    [[nodiscard]] bool isOverCrossoverDragArea (juce::Point<float> position) const
+    {
+        const auto* parameter = parameterNear (position, 12.0f);
+        return parameter != nullptr
+            && parameter->paramID == smart_ducking::parameter_ids::crossoverHz;
     }
 
     void drawWeightingNode (juce::Graphics& graphics,
@@ -1776,7 +1856,7 @@ private:
     juce::String tooltipForMarker (const juce::RangedAudioParameter& parameter) const
     {
         if (parameter.paramID == smart_ducking::parameter_ids::crossoverHz)
-            return "Crossover between broadband and spectral processing. Drag to adjust; double-click the marker to reset; right-click or double-click its value to type a frequency.";
+            return "Crossover between broadband and spectral processing. Drag to adjust frequency; use the mouse wheel over the marker for 24/36/48/60/72 dB/oct; double-click the marker to reset frequency; right-click or double-click its value to type a frequency.";
 
         if (parameter.paramID == smart_ducking::parameter_ids::spectralLowHz)
             return "Lowest frequency affected by spectral ducking. Drag to adjust; double-click the marker to reset; right-click or double-click its value to type a frequency.";
@@ -1840,10 +1920,8 @@ private:
     std::array<float, displayBins> outputDb {};
     std::array<float, displayBins> reductionDb {};
     std::array<float, displayBins> spectralMaskDb {};
-    std::array<float, crossoverTemplatePoints> crossoverLowTemplateDb {};
-    std::array<float, crossoverTemplatePoints> crossoverHighTemplateDb {};
-    std::array<juce::Point<float>, crossoverTemplatePoints> crossoverLowPoints {};
-    std::array<juce::Point<float>, crossoverTemplatePoints> crossoverHighPoints {};
+    std::array<juce::Point<float>, crossoverCurvePoints> crossoverLowPoints {};
+    std::array<juce::Point<float>, crossoverCurvePoints> crossoverHighPoints {};
     juce::Path crossoverLowPath;
     juce::Path crossoverHighPath;
     std::array<juce::Rectangle<float>, 3> markerLabelBounds {};
@@ -1855,10 +1933,13 @@ private:
     double lastSpectrumFrameMilliseconds = 0.0;
     float spectrumDisplayOffsetDb = 0.0f;
     float cachedCrossoverFrequency = -1.0f;
+    int cachedCrossoverSlopeDbPerOctave = -1;
     float cachedMaximumDisplayFrequency = -1.0f;
     juce::Rectangle<float> cachedCrossoverBounds;
     float weightDragStartY = 0.0f;
     float weightDragStartQ = 0.8f;
+    float crossoverWheelAccumulator = 0.0f;
+    double lastCrossoverWheelStepMilliseconds = 0.0;
     bool hasSpectrumFrame = false;
     bool hasSpectrumCalibration = false;
     bool weightNodeDragging = false;
@@ -1874,6 +1955,8 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
 {
     using namespace smart_ducking::parameter_ids;
 
+    globalBypassPanel = std::make_unique<GlobalBypassPanel>();
+    globalBypassPanel->setComponentID ("globalBypassPanel");
     onWaveLogo = juce::ImageCache::getFromMemory (BinaryData::OnWaveLogo_png,
                                                   BinaryData::OnWaveLogo_pngSize);
     setOpaque (true);
@@ -1909,7 +1992,6 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     lastFactoryProgramChangeCount = audioProcessor.getFactoryProgramChangeCount();
     rebuildPresetMenu();
 
-    addAndMakeVisible (globalBypassButton);
     globalBypassButton.getProperties().set (bypassIconProperty, true);
     globalBypassButton.setComponentID ("globalBypassButton");
     globalBypassButton.setClickingTogglesState (true);
@@ -1919,6 +2001,9 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
         audioProcessor.getParameterState(), globalBypass, globalBypassButton);
 
     addAndMakeVisible (stageControlPanel);
+    stageControlPanel.setComponentID ("stageControlPanel");
+    addAndMakeVisible (*globalBypassPanel);
+    globalBypassPanel->addAndMakeVisible (globalBypassButton);
 
     for (size_t slot = 0; slot < comparisonButtons.size(); ++slot)
     {
@@ -1956,8 +2041,9 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     {
         auto& label = stageLabels[stage];
         stageControlPanel.addAndMakeVisible (label);
+        label.setComponentID ("stageLabel" + juce::String (stage));
         label.setText (stageNames[stage], juce::dontSendNotification);
-        label.setJustificationType (juce::Justification::centred);
+        label.setJustificationType (juce::Justification::centredRight);
         label.setColour (juce::Label::textColourId, secondaryTextColour);
         label.setFont (juce::FontOptions { 10.0f, juce::Font::bold });
         label.setInterceptsMouseClicks (false, false);
@@ -2038,8 +2124,8 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     processingModeChoice.addItem ("NORMAL", 2);
     processingModeChoice.setJustificationType (juce::Justification::centred);
     processingModeChoice.setTooltip (
-        "Normal uses the complementary FFT-domain crossover and 2x overlap. Quality uses "
-        "the time-domain LR8 crossover and 4x STFT overlap for the most accurate transient "
+        "Normal uses the selected complementary FFT-domain crossover and 2x overlap. Quality uses "
+        "the selected time-domain Linkwitz-Riley crossover and 4x STFT overlap for the most accurate transient "
         "response at higher CPU cost.");
     processingModeLabel.setTooltip (processingModeChoice.getTooltip());
     processingModeAttachment = std::make_unique<ComboBoxAttachment> (
@@ -2121,17 +2207,13 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     matrixSymmetryButton.setTooltip (
         "Mirror manual matrix edits between L/R and Ls/Rs without rewriting host automation.");
 
-    addAndMakeVisible (voiceFormatLabel);
     addAndMakeVisible (voiceFormatChoice);
-    voiceFormatLabel.setText ("VOICE", juce::dontSendNotification);
-    voiceFormatLabel.setJustificationType (juce::Justification::centredLeft);
-    voiceFormatLabel.setColour (juce::Label::textColourId, secondaryTextColour);
-    voiceFormatLabel.setFont (juce::FontOptions { 11.0f, juce::Font::bold });
+    voiceFormatChoice.setComponentID ("voiceFormatChoice");
+    voiceFormatChoice.getProperties().set (comboContextLabelProperty, "VOICE");
     voiceFormatChoice.addItem ("STEREO", 1);
     voiceFormatChoice.addItem ("SURROUND", 2);
     voiceFormatChoice.setJustificationType (juce::Justification::centred);
     voiceFormatChoice.setTooltip ("Select whether the sidechain voice signal is stereo or surround.");
-    voiceFormatLabel.setTooltip (voiceFormatChoice.getTooltip());
     voiceFormatAttachment = std::make_unique<ComboBoxAttachment> (
         audioProcessor.getParameterState(), voiceFormat, voiceFormatChoice);
 
@@ -2562,12 +2644,6 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
     graphics.fillEllipse (duckingLampBounds.reduced (2.0f));
     graphics.setColour (lampGlow.withAlpha (0.75f));
     graphics.drawEllipse (duckingLampBounds, 1.0f);
-    graphics.setColour (duckingIndicatorActive ? voiceColour : mutedTextColour);
-    graphics.setFont (juce::FontOptions { 10.0f, juce::Font::bold });
-    graphics.drawText (duckingIndicatorActive ? "ACTIVE" : "SLEEP",
-                       activityStatusBounds,
-                       juce::Justification::centredRight);
-
     drawCard (graphics, stageControlPanel.getBounds().toFloat(), 8.0f);
 
     const auto spectrum = spectrumPanel->getBounds().toFloat();
@@ -2667,45 +2743,57 @@ void SmartDuckingAudioProcessorEditor::paintOverChildren (juce::Graphics& graphi
 void SmartDuckingAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
-    auto header = bounds.removeFromTop (headerHeight).reduced (12, 10);
-    auto lampArea = header.removeFromRight (76);
-    duckingLampBounds = lampArea.removeFromRight (18).toFloat().withSizeKeepingCentre (12.0f,
-                                                                                      12.0f);
-    activityStatusBounds = lampArea.toFloat();
-    header.removeFromRight (6);
-    globalBypassButton.setBounds (header.removeFromRight (36).withSizeKeepingCentre (34, 32));
-    header.removeFromRight (8);
+    const auto headerBounds = bounds.removeFromTop (headerHeight).reduced (12, 10);
+    auto rightHeader = headerBounds;
+    auto lampArea = rightHeader.removeFromRight (18);
+    duckingLampBounds = lampArea.toFloat().withSizeKeepingCentre (12.0f, 12.0f);
+    rightHeader.removeFromRight (6);
 
-    const auto placeHeaderControl = [&header] (juce::Component& component,
-                                                int width,
-                                                int height)
+    const auto placeRightHeaderControl = [&rightHeader] (juce::Component& component,
+                                                         int width,
+                                                         int height)
     {
-        component.setBounds (header.removeFromRight (width)
-                                   .withSizeKeepingCentre (width, height));
+        component.setBounds (rightHeader.removeFromRight (width)
+                                        .withSizeKeepingCentre (width, height));
     };
 
     if (audioProcessor.isSurroundVariant())
     {
-        placeHeaderControl (dropLfeToggle, 88, 34);
-        header.removeFromRight (4);
-        placeHeaderControl (downmixToggle, 86, 34);
-        header.removeFromRight (8);
+        placeRightHeaderControl (dropLfeToggle, 88, 34);
+        rightHeader.removeFromRight (4);
+        placeRightHeaderControl (downmixToggle, 86, 34);
+        rightHeader.removeFromRight (8);
     }
 
-    placeHeaderControl (voiceFormatChoice, 112, 38);
-    header.removeFromRight (4);
-    placeHeaderControl (voiceFormatLabel, 45, 28);
-    header.removeFromRight (8);
-    placeHeaderControl (comparisonButtons[1], 32, 32);
-    header.removeFromRight (3);
-    placeHeaderControl (comparisonButtons[0], 32, 32);
-    header.removeFromRight (8);
-    const auto presetWidth = audioProcessor.isSurroundVariant()
-        ? juce::jlimit (110, 150, getWidth() - 850) : 150;
-    placeHeaderControl (presetChoice, presetWidth, 36);
+    placeRightHeaderControl (voiceFormatChoice, 112, 36);
 
-    auto stageRow = bounds.removeFromTop (54).reduced (12, 5);
-    stageControlPanel.setBounds (stageRow);
+    constexpr auto leftHeaderControlsX = 326;
+    auto leftHeader = juce::Rectangle<int> (
+        leftHeaderControlsX,
+        headerBounds.getY(),
+        juce::jmax (0, rightHeader.getRight() - leftHeaderControlsX),
+        headerBounds.getHeight());
+    const auto placeLeftHeaderControl = [&leftHeader] (juce::Component& component,
+                                                       int width,
+                                                       int height)
+    {
+        component.setBounds (leftHeader.removeFromLeft (width)
+                                       .withSizeKeepingCentre (width, height));
+    };
+
+    placeLeftHeaderControl (presetChoice, 150, 36);
+    leftHeader.removeFromLeft (8);
+    placeLeftHeaderControl (comparisonButtons[0], 32, 32);
+    leftHeader.removeFromLeft (3);
+    placeLeftHeaderControl (comparisonButtons[1], 32, 32);
+
+    auto secondRow = bounds.removeFromTop (54).reduced (12, 5);
+    auto globalBypassArea = secondRow.removeFromRight (50);
+    secondRow.removeFromRight (8);
+    stageControlPanel.setBounds (secondRow);
+    globalBypassPanel->setBounds (globalBypassArea);
+    globalBypassButton.setBounds (
+        globalBypassPanel->getLocalBounds().withSizeKeepingCentre (34, 32));
     auto stageContent = stageControlPanel.getLocalBounds().reduced (8, 4);
     const auto stageWidth = stageContent.getWidth() / 3;
 
@@ -2713,12 +2801,19 @@ void SmartDuckingAudioProcessorEditor::resized()
     {
         auto group = stageContent.removeFromLeft (
             stage == stageLabels.size() - 1 ? stageContent.getWidth() : stageWidth);
-        stageLabels[stage].setBounds (group.removeFromLeft (juce::jmax (72, group.getWidth() / 2)));
-        const auto buttonWidth = group.getWidth() / 3;
+        constexpr auto maximumStageContentWidth = 370;
+        constexpr auto stageLabelWidth = 92;
+        constexpr auto stageLabelGap = 8;
+        auto compactGroup = group.withSizeKeepingCentre (
+            juce::jmin (maximumStageContentWidth, group.getWidth()),
+            group.getHeight());
+        stageLabels[stage].setBounds (compactGroup.removeFromLeft (stageLabelWidth));
+        compactGroup.removeFromLeft (stageLabelGap);
+        const auto buttonWidth = compactGroup.getWidth() / 3;
 
         for (size_t control = 0; control < 3; ++control)
-            stageButtons[stage * 3 + control].setBounds (group.removeFromLeft (
-                control == 2 ? group.getWidth() : buttonWidth).reduced (2, 3));
+            stageButtons[stage * 3 + control].setBounds (compactGroup.removeFromLeft (
+                control == 2 ? compactGroup.getWidth() : buttonWidth).reduced (2, 3));
     }
 
     bounds.reduce (12, 6);
@@ -2793,7 +2888,7 @@ void SmartDuckingAudioProcessorEditor::showChannelOrderMenu (
         menu.addItem (
             order + 1,
             juce::String (smart_ducking::surroundChannelOrderNames[static_cast<size_t> (order)])
-                + "   ·   "
+                + " - "
                 + smart_ducking::surroundChannelOrderPreviews[static_cast<size_t> (order)],
             true,
             order == currentOrder);
@@ -3267,7 +3362,7 @@ void SmartDuckingAudioProcessorEditor::timerCallback()
     }
 
     if (duckingStateChanged)
-        repaint (duckingLampBounds.getUnion (activityStatusBounds).expanded (6.0f).toNearestInt());
+        repaint (duckingLampBounds.expanded (6.0f).toNearestInt());
 #if SMART_DUCKING_ENABLE_DIAGNOSTICS
     audioProcessor.recordEditorTimerDuration (static_cast<std::uint64_t> (
         juce::Time::getHighResolutionTicks() - diagnosticTimerStart));

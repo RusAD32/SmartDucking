@@ -80,13 +80,14 @@ target_link_libraries(SmartDucking
 
 target_sources(SmartDucking PRIVATE
     Source/ParameterIds.h
+    Source/CrossoverMagnitude.h
     Source/DiagnosticLogger.h
     Source/DiagnosticLogger.cpp
     Source/FactoryPresets.h
     Source/UserPresetStore.h
     Source/UserPresetStore.cpp
     Source/LcrDuckMatrix.h
-    Source/LinkwitzRiley8Crossover.h
+    Source/LinkwitzRileyCrossover.h
     Source/PceHistory.h
     Source/PowerOfTwoDelayBuffer.h
     Source/PluginVariant.h
@@ -221,13 +222,14 @@ if (SMART_DUCKING_BUILD_TESTS)
     target_sources(SmartDuckingTests PRIVATE
         Tests/ProcessorTests.cpp
         Source/ParameterIds.h
+        Source/CrossoverMagnitude.h
         Source/DiagnosticLogger.h
         Source/DiagnosticLogger.cpp
         Source/FactoryPresets.h
         Source/UserPresetStore.h
         Source/UserPresetStore.cpp
         Source/LcrDuckMatrix.h
-        Source/LinkwitzRiley8Crossover.h
+        Source/LinkwitzRileyCrossover.h
         Source/PceHistory.h
         Source/PowerOfTwoDelayBuffer.h
         Source/PluginVariant.h

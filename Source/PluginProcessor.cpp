@@ -121,6 +121,7 @@ SmartDuckingAudioProcessor::SmartDuckingAudioProcessor (smart_ducking::PluginVar
 
     duckDepthParameter = parameters.getRawParameterValue (duckDepthDb);
     crossoverParameter = parameters.getRawParameterValue (crossoverHz);
+    crossoverSlopeParameter = parameters.getRawParameterValue (crossoverSlope);
     attackParameter = parameters.getRawParameterValue (attackMs);
     holdParameter = parameters.getRawParameterValue (holdMs);
     releaseParameter = parameters.getRawParameterValue (releaseMs);
@@ -164,6 +165,7 @@ SmartDuckingAudioProcessor::SmartDuckingAudioProcessor (smart_ducking::PluginVar
 
     jassert (duckDepthParameter != nullptr
              && crossoverParameter != nullptr
+             && crossoverSlopeParameter != nullptr
              && attackParameter != nullptr
              && holdParameter != nullptr
              && releaseParameter != nullptr
@@ -412,7 +414,9 @@ void SmartDuckingAudioProcessor::prepareToPlay (double sampleRate, int maximumEx
     processorPrepared.store (false, std::memory_order_release);
     audioCallbackQuiescent.store (false, std::memory_order_release);
     currentSampleRate = juce::jmax (1.0, sampleRate);
-    crossover.prepare (sampleRate, crossoverParameter->load());
+    crossover.prepare (sampleRate,
+                       crossoverParameter->load(),
+                       24.0f + 12.0f * crossoverSlopeParameter->load());
     spectralLcrProcessor.prepare (sampleRate);
     const auto useNormalMode = processingModeParameter->load() >= 0.5f;
     const auto resolutionIndex = juce::jlimit (
@@ -1223,6 +1227,8 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     crossover.setCutoffHz (crossoverParameter->load());
+    crossover.setSlopeDbPerOctave (
+        24.0f + 12.0f * crossoverSlopeParameter->load());
     const auto requestedLookaheadSamples = juce::jlimit (
         0.0f,
         static_cast<float> (maximumLookaheadSamples),
@@ -1243,6 +1249,8 @@ void SmartDuckingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     spectralParameters.releaseMs = releaseParameter->load();
     spectralParameters.duckDepthDb = duckDepthParameter->load();
     spectralParameters.crossoverHz = crossoverParameter->load();
+    spectralParameters.crossoverSlopeDbPerOctave =
+        24.0f + 12.0f * crossoverSlopeParameter->load();
     spectralParameters.crossoverStageMix = crossoverEnabled ? 1.0f : 0.0f;
     spectralParameters.widebandStageMix = widebandEnabled ? 1.0f : 0.0f;
     spectralParameters.spectralStageMix = spectralEnabled ? 1.0f : 0.0f;
@@ -1895,6 +1903,23 @@ void SmartDuckingAudioProcessor::setStateInformation (const void* data, int size
             if (snapshot.isValid())
                 restoredState.removeChild (snapshot, nullptr);
         removeLegacyState (restoredState);
+
+        auto hasCrossoverSlope = false;
+        for (const auto& child : restoredState)
+            hasCrossoverSlope = hasCrossoverSlope
+                              || child.getProperty ("id").toString()
+                                     == smart_ducking::parameter_ids::crossoverSlope;
+
+        if (! hasCrossoverSlope)
+        {
+            juce::ValueTree defaultSlope { "PARAM" };
+            defaultSlope.setProperty ("id",
+                                      smart_ducking::parameter_ids::crossoverSlope,
+                                      nullptr);
+            defaultSlope.setProperty ("value", 2.0f, nullptr);
+            restoredState.appendChild (defaultSlope, nullptr);
+        }
+
         parameters.replaceState (restoredState);
         initialiseComparisonSlots();
 
@@ -1926,6 +1951,12 @@ SmartDuckingAudioProcessor::createParameterLayout()
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
     layout.add (makeFloatParameter (crossoverHz, "Crossover", frequencyRange (50.0f, 180.0f), 92.0f, "Hz"));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { crossoverSlope, parameterVersion },
+        "Crossover Slope",
+        juce::StringArray { "24 dB/oct", "36 dB/oct", "48 dB/oct",
+                            "60 dB/oct", "72 dB/oct" },
+        2));
     layout.add (makeFloatParameter (duckDepthDb, "Duck Depth", { 0.0f, 18.0f, 0.01f }, 10.0f, "dB"));
     layout.add (makeFloatParameter (attackMs, "Attack", { 0.0f, 200.0f, 0.1f }, 50.0f, "ms"));
     layout.add (makeFloatParameter (holdMs, "Hold", { 0.0f, 500.0f, 0.1f }, 150.0f, "ms"));

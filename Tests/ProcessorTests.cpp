@@ -6,7 +6,9 @@
 
 #include "ParameterIds.h"
 #include "PluginProcessor.h"
+#include "CrossoverMagnitude.h"
 #include "LcrDuckMatrix.h"
+#include "LinkwitzRileyCrossover.h"
 #include "PceHistory.h"
 #include "PowerOfTwoDelayBuffer.h"
 #include "SidechainClassifier.h"
@@ -137,7 +139,9 @@ ToneResult processTone (SmartDuckingAudioProcessor& processor,
 }
 
 double processToneAfterMonitorSwitch (smart_ducking::MonitorMode monitorMode,
-                                      double frequencyHz)
+                                      double frequencyHz,
+                                      float slopeIndex = 2.0f,
+                                      float crossoverHz = 92.0f)
 {
     constexpr double sampleRate = 48000.0;
     constexpr int blockSize = 128;
@@ -147,6 +151,8 @@ double processToneAfterMonitorSwitch (smart_ducking::MonitorMode monitorMode,
     constexpr float amplitude = 0.5f;
     SmartDuckingAudioProcessor processor;
     setParameter (processor, smart_ducking::parameter_ids::processingMode, 1.0f);
+    setParameter (processor, smart_ducking::parameter_ids::crossoverSlope, slopeIndex);
+    setParameter (processor, smart_ducking::parameter_ids::crossoverHz, crossoverHz);
     setParameter (processor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
     setParameter (processor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
     processor.prepareToPlay (sampleRate, blockSize);
@@ -198,7 +204,8 @@ double processToneAfterMonitorSwitch (smart_ducking::MonitorMode monitorMode,
 }
 
 std::vector<float> renderNormalCrossoverMonitor (
-    smart_ducking::MonitorMode monitorMode)
+    smart_ducking::MonitorMode monitorMode,
+    float slopeIndex = 2.0f)
 {
     constexpr double sampleRate = 48000.0;
     constexpr int blockSize = 128;
@@ -210,6 +217,7 @@ std::vector<float> renderNormalCrossoverMonitor (
                   smart_ducking::parameter_ids::monitorMode,
                   static_cast<float> (monitorMode));
     setParameter (processor, smart_ducking::parameter_ids::crossoverHz, 750.0f);
+    setParameter (processor, smart_ducking::parameter_ids::crossoverSlope, slopeIndex);
     setParameter (processor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
     setParameter (processor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
     processor.prepareToPlay (sampleRate, blockSize);
@@ -246,6 +254,58 @@ std::vector<float> renderNormalCrossoverMonitor (
     }
 
     return output;
+}
+
+struct CrossoverToneResult
+{
+    double lowRatio = 0.0;
+    double highRatio = 0.0;
+    double sumRatio = 0.0;
+};
+
+CrossoverToneResult measureQualityCrossover (float slopeDbPerOctave,
+                                              double frequencyHz)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr float cutoffHz = 92.0f;
+    constexpr int totalSamples = 96000;
+    constexpr int warmupSamples = 24000;
+    smart_ducking::LinkwitzRileyCrossover crossover;
+    crossover.prepare (sampleRate, cutoffHz, slopeDbPerOctave);
+    double inputEnergy = 0.0;
+    double lowEnergy = 0.0;
+    double highEnergy = 0.0;
+    double sumEnergy = 0.0;
+    auto phase = 0.0;
+    const auto phaseIncrement = juce::MathConstants<double>::twoPi
+                              * frequencyHz / sampleRate;
+
+    for (int sample = 0; sample < totalSamples; ++sample)
+    {
+        const auto input = static_cast<float> (std::sin (phase));
+        phase += phaseIncrement;
+
+        if (phase >= juce::MathConstants<double>::twoPi)
+            phase -= juce::MathConstants<double>::twoPi;
+
+        crossover.beginSample();
+        const auto bands = crossover.processSample (0, input);
+
+        if (sample < warmupSamples)
+            continue;
+
+        inputEnergy += static_cast<double> (input) * input;
+        lowEnergy += static_cast<double> (bands.low) * bands.low;
+        highEnergy += static_cast<double> (bands.high) * bands.high;
+        const auto sum = static_cast<double> (bands.low + bands.high);
+        sumEnergy += sum * sum;
+    }
+
+    return {
+        std::sqrt (lowEnergy / inputEnergy),
+        std::sqrt (highEnergy / inputEnergy),
+        std::sqrt (sumEnergy / inputEnergy)
+    };
 }
 
 SpatialToneResult processSpatialTone (SmartDuckingAudioProcessor& processor,
@@ -514,6 +574,37 @@ int main()
     SmartDuckingAudioProcessor processor;
     SmartDuckingAudioProcessor surroundProcessor (smart_ducking::PluginVariant::surround);
 
+    for (const auto slopeDbPerOctave : { 24.0f, 36.0f, 48.0f, 60.0f, 72.0f })
+    {
+        const auto lowAtCutoff = smart_ducking::crossoverLowMagnitude (
+            100.0f, 100.0f, slopeDbPerOctave);
+        const auto highAtCutoff = smart_ducking::crossoverHighMagnitude (
+            100.0f, 100.0f, slopeDbPerOctave);
+        expect (approximatelyEqual (lowAtCutoff, 0.5f)
+                    && approximatelyEqual (highAtCutoff, 0.5f),
+                "every displayed crossover slope intersects at complementary -6.02 dB");
+
+        for (const auto frequency : { 20.0f, 43.5f, 100.0f, 229.7f, 20000.0f })
+        {
+            const auto low = smart_ducking::crossoverLowMagnitude (
+                frequency, 100.0f, slopeDbPerOctave);
+            const auto high = smart_ducking::crossoverHighMagnitude (
+                frequency, 100.0f, slopeDbPerOctave);
+            expect (approximatelyEqual (low + high, 1.0f),
+                    "displayed crossover branches stay magnitude-complementary across the plot");
+        }
+    }
+
+    for (const auto slopeDbPerOctave : { 24.0f, 36.0f, 48.0f })
+    {
+        const auto formerTemplateEdgeHz = 100.0f * std::pow (2.0f, 1.2f);
+        const auto lowAtFormerEdge = smart_ducking::crossoverLowMagnitude (
+            formerTemplateEdgeHz, 100.0f, slopeDbPerOctave);
+        expect (lowAtFormerEdge
+                    > juce::Decibels::decibelsToGain (-60.0f),
+                "shallower crossover curves are not truncated at the former template edge");
+    }
+
     expect (processor.getName() == "Smart Ducking (Stereo)", "stereo plugin name");
     expect (surroundProcessor.getName() == "Smart Ducking (Surround)", "surround plugin name");
     expect (approximatelyEqual (static_cast<float> (processor.getTailLengthSeconds()), 2.0f),
@@ -547,6 +638,22 @@ int main()
     const auto& state = processor.getParameterState();
     expect (approximatelyEqual (*state.getRawParameterValue (smart_ducking::parameter_ids::crossoverHz), 92.0f),
             "crossover default");
+    if (const auto* crossoverSlope = state.getParameter (
+            smart_ducking::parameter_ids::crossoverSlope))
+    {
+        expect (crossoverSlope->getAllValueStrings()
+                    == juce::StringArray { "24 dB/oct", "36 dB/oct", "48 dB/oct",
+                                           "60 dB/oct", "72 dB/oct" }
+                    && approximatelyEqual (
+                        *state.getRawParameterValue (
+                            smart_ducking::parameter_ids::crossoverSlope),
+                        2.0f),
+                "Crossover Slope exposes five choices and defaults to 48 dB/oct");
+    }
+    else
+    {
+        expect (false, "Crossover Slope parameter exists");
+    }
     expect (approximatelyEqual (*state.getRawParameterValue (smart_ducking::parameter_ids::duckDepthDb), 10.0f),
             "duck depth default");
     expect (approximatelyEqual (*state.getRawParameterValue (smart_ducking::parameter_ids::matrixLC), 0.25f),
@@ -1118,13 +1225,17 @@ int main()
                 "NORMAL live switch to Crossover High outputs only the FFT high branch");
     }
 
+    for (int slopeIndex = 0; slopeIndex < 5; ++slopeIndex)
     {
         const auto fullBand = renderNormalCrossoverMonitor (
-            smart_ducking::MonitorMode::normal);
+            smart_ducking::MonitorMode::normal,
+            static_cast<float> (slopeIndex));
         const auto lowBand = renderNormalCrossoverMonitor (
-            smart_ducking::MonitorMode::crossoverLow);
+            smart_ducking::MonitorMode::crossoverLow,
+            static_cast<float> (slopeIndex));
         const auto highBand = renderNormalCrossoverMonitor (
-            smart_ducking::MonitorMode::crossoverHigh);
+            smart_ducking::MonitorMode::crossoverHigh,
+            static_cast<float> (slopeIndex));
         expect (fullBand.size() == lowBand.size() && lowBand.size() == highBand.size(),
                 "NORMAL crossover monitor renders matching signal lengths");
 
@@ -1142,7 +1253,57 @@ int main()
 
         const auto relativeRmsError = std::sqrt (errorEnergy / referenceEnergy);
         expect (relativeRmsError < 1.0e-4 && maximumError < 1.0e-4f,
-                "NORMAL FFT Low plus High reconstructs the latency-aligned full-band signal");
+                "every NORMAL slope keeps FFT Low plus High exactly complementary");
+    }
+
+    for (const auto slopeDbPerOctave : { 24.0f, 36.0f, 48.0f, 60.0f, 72.0f })
+    {
+        constexpr auto cutoffHz = 92.0;
+        const auto order = static_cast<int> (slopeDbPerOctave / 6.0f);
+        const auto atCutoff = measureQualityCrossover (slopeDbPerOctave, cutoffHz);
+        const auto oneOctaveAbove = measureQualityCrossover (
+            slopeDbPerOctave, 2.0 * cutoffHz);
+        const auto warpedRatio = std::tan (juce::MathConstants<double>::pi
+                                           * 2.0 * cutoffHz / 48000.0)
+                               / std::tan (juce::MathConstants<double>::pi
+                                           * cutoffHz / 48000.0);
+        const auto expectedLowAbove = 1.0 / (1.0 + std::pow (warpedRatio, order));
+
+        expect (std::abs (atCutoff.lowRatio - 0.5) < 0.001
+                    && std::abs (atCutoff.highRatio - 0.5) < 0.001,
+                "every QUALITY slope crosses at complementary -6.02 dB branches");
+        expect (std::abs (atCutoff.sumRatio - 1.0) < 0.001
+                    && std::abs (oneOctaveAbove.sumRatio - 1.0) < 0.001,
+                "every QUALITY Linkwitz-Riley slope reconstructs a flat all-pass sum");
+        expect (std::abs (oneOctaveAbove.lowRatio - expectedLowAbove) < 0.001,
+                "every QUALITY crossover option has its requested asymptotic slope");
+
+        SmartDuckingAudioProcessor qualityProcessor;
+        setParameter (qualityProcessor,
+                      smart_ducking::parameter_ids::processingMode,
+                      0.0f);
+        setParameter (qualityProcessor,
+                      smart_ducking::parameter_ids::crossoverSlope,
+                      (slopeDbPerOctave - 24.0f) / 12.0f);
+        setParameter (qualityProcessor, smart_ducking::parameter_ids::duckDepthDb, 0.0f);
+        setParameter (qualityProcessor,
+                      smart_ducking::parameter_ids::spectralAmountDb,
+                      0.0f);
+        const auto qualityRoundTrip = processTone (
+            qualityProcessor, cutoffHz, 0.0f, 0.0f);
+        expect (std::abs (qualityRoundTrip.leftRatio - 1.0) < 0.004
+                    && std::abs (qualityRoundTrip.rightRatio - 1.0) < 0.004,
+                "every QUALITY slope remains flat through the complete processor path");
+
+        constexpr auto normalCutoffHz = 93.75f;
+        const auto normalLowAbove = processToneAfterMonitorSwitch (
+            smart_ducking::MonitorMode::crossoverLow,
+            2.0 * normalCutoffHz,
+            (slopeDbPerOctave - 24.0f) / 12.0f,
+            normalCutoffHz);
+        const auto expectedNormalLowAbove = 1.0 / (1.0 + std::pow (2.0, order));
+        expect (std::abs (normalLowAbove - expectedNormalLowAbove) < 0.004,
+                "every NORMAL crossover option applies its selected cached FFT slope");
     }
 
     {
@@ -1865,15 +2026,15 @@ int main()
 
     const auto dryHigh = processTone (processor, 1000.0, 0.0f, 0.0f);
     expect (approximatelyEqual (static_cast<float> (dryHigh.leftRatio), 1.0f, 0.002f),
-            "LR8 reconstruction is flat at one kilohertz left");
+            "default QUALITY crossover reconstruction is flat at one kilohertz left");
     expect (approximatelyEqual (static_cast<float> (dryHigh.rightRatio), 1.0f, 0.002f),
-            "LR8 reconstruction is flat at one kilohertz right");
+            "default QUALITY crossover reconstruction is flat at one kilohertz right");
     expect (approximatelyEqual (processor.getSidechainPeakLeft(), 0.0f), "silent left sidechain meter");
     expect (approximatelyEqual (processor.getSidechainPeakRight(), 0.0f), "silent right sidechain meter");
 
     const auto dryAtCrossover = processTone (processor, 92.0, 0.0f, 0.0f);
     expect (approximatelyEqual (static_cast<float> (dryAtCrossover.leftRatio), 1.0f, 0.003f),
-            "LR8 reconstruction is flat at crossover");
+            "default QUALITY crossover reconstruction is flat at crossover");
 
     setParameter (processor, smart_ducking::parameter_ids::spectralAmountDb, 0.0f);
 
@@ -2788,23 +2949,118 @@ int main()
                 "obsolete Simple/Advanced and Spectrum navigation is absent");
         const auto* globalBypassButton = dynamic_cast<juce::TextButton*> (
             findComponentWithId (*editor, "globalBypassButton"));
+        const auto* globalBypassPanel = findComponentWithId (
+            *editor, "globalBypassPanel");
         expect (globalBypassButton != nullptr
                     && globalBypassButton->getClickingTogglesState()
-                    && ! globalBypassButton->getBounds().isEmpty(),
-                "header exposes the icon-only global bypass beside activity status");
+                    && ! globalBypassButton->getBounds().isEmpty()
+                    && globalBypassButton->getParentComponent() != nullptr
+                    && globalBypassButton->getParentComponent()->getComponentID()
+                           == "globalBypassPanel"
+                    && globalBypassPanel != nullptr
+                    && globalBypassPanel->getParentComponent() != nullptr
+                    && dynamic_cast<juce::AudioProcessorEditor*> (
+                           globalBypassPanel->getParentComponent()) != nullptr,
+                "second row contains global bypass in a separate sibling mini-panel");
         const auto* presetSelector = dynamic_cast<juce::ComboBox*> (
             findComponentWithId (*editor, "presetChoice"));
         const auto* comparisonA = findTextButton (*editor, "A");
+        const auto* comparisonB = findTextButton (*editor, "B");
+        const auto* voiceFormatSelector = findComponentWithId (
+            *editor, "voiceFormatChoice");
         expect (presetSelector != nullptr
                     && presetSelector->getText().isNotEmpty()
                     && ! presetSelector->getBounds().isEmpty()
                     && comparisonA != nullptr
-                    && presetSelector->getRight() < comparisonA->getX(),
-                "preset selector is visible between branding and A/B comparison");
+                    && presetSelector->getRight() < comparisonA->getX()
+                    && presetSelector->getX() == 326
+                    && comparisonA->getX() - presetSelector->getRight() == 8
+                    && comparisonB != nullptr
+                    && comparisonB->getX() - comparisonA->getRight() == 3,
+                "preset selector and A/B form a stable left-aligned group after the branding");
+        expect (comparisonB != nullptr && voiceFormatSelector != nullptr
+                    && voiceFormatSelector->getX() - comparisonB->getRight() >= 14,
+                "left-aligned A/B comparison remains separated from the right header controls");
         expect (findTextButton (*editor, "LOW") != nullptr
                     && findTextButton (*editor, "HIGH") != nullptr
                     && findComponentWithId (*editor, "stageBypassButton0") != nullptr,
                 "Crossover strip exposes icon bypass plus LOW and HIGH monitors");
+        for (int stage = 0; stage < 3; ++stage)
+        {
+            const auto* label = findComponentWithId (
+                *editor, "stageLabel" + juce::String (stage));
+            const auto* bypass = findComponentWithId (
+                *editor, "stageBypassButton" + juce::String (stage));
+            expect (label != nullptr && bypass != nullptr
+                        && bypass->getX() - label->getRight() == 10,
+                    "each stage label has the same compact gap before its controls");
+        }
+        const auto* spectralBypass = findComponentWithId (
+            *editor, "stageBypassButton2");
+        const auto* stagePanel = findComponentWithId (*editor, "stageControlPanel");
+        expect (globalBypassPanel != nullptr && globalBypassButton != nullptr
+                    && spectralBypass != nullptr && stagePanel != nullptr
+                    && globalBypassPanel->getX() - stagePanel->getRight() == 8
+                    && globalBypassPanel->getY() == stagePanel->getY()
+                    && globalBypassPanel->getWidth() == 50
+                    && globalBypassPanel->getHeight() == stagePanel->getHeight()
+                    && globalBypassButton->getBounds()
+                           == globalBypassPanel->getLocalBounds()
+                                  .withSizeKeepingCentre (34, 32),
+                "stage card and outlined global-bypass card are separate sibling groups");
+
+        if (auto* spectrum = findComponentWithId (*editor, "spectrumPanel"))
+        {
+            juce::Image spectrumSnapshot (juce::Image::RGB,
+                                          spectrum->getWidth(),
+                                          spectrum->getHeight(),
+                                          true);
+            juce::Graphics spectrumGraphics (spectrumSnapshot);
+            spectrum->paintEntireComponent (spectrumGraphics, true);
+            auto plot = spectrum->getLocalBounds().toFloat().reduced (1.0f)
+                           .reduced (12.0f, 10.0f)
+                           .withTrimmedLeft (30.0f)
+                           .withTrimmedRight (30.0f);
+            const auto crossoverX = plot.getX() + static_cast<float> (
+                std::log (92.0f / 20.0f) / std::log (20000.0f / 20.0f))
+                    * plot.getWidth();
+            // The entire vertical drag stripe must also accept wheel input,
+            // not only the small circular handle or its text label.
+            const auto position = juce::Point<float> {
+                crossoverX, plot.getBottom() - 70.0f
+            };
+            const auto eventTime = juce::Time::getCurrentTime();
+            const auto mouseEvent = juce::MouseEvent (
+                juce::Desktop::getInstance().getMainMouseSource(),
+                position,
+                juce::ModifierKeys {},
+                0.0f,
+                0.0f,
+                0.0f,
+                0.0f,
+                0.0f,
+                spectrum,
+                spectrum,
+                eventTime,
+                position,
+                eventTime,
+                1,
+                false);
+            const auto trackpadWheel = juce::MouseWheelDetails {
+                0.0f, 0.001f, false, true, false
+            };
+            spectrum->mouseWheelMove (mouseEvent, trackpadWheel);
+            expect (approximatelyEqual (
+                        *processor.getParameterState().getRawParameterValue (
+                            smart_ducking::parameter_ids::crossoverSlope),
+                        3.0f),
+                    "a tiny smooth macOS trackpad delta changes Crossover Slope anywhere in its drag stripe");
+            setParameter (processor, smart_ducking::parameter_ids::crossoverSlope, 2.0f);
+        }
+        else
+        {
+            expect (false, "spectrum panel is available for trackpad interaction testing");
+        }
 
         activate ("ROUTING");
         visible = inspectVisibleControls (*editor);
@@ -2835,10 +3091,13 @@ int main()
 
     {
         std::unique_ptr<juce::AudioProcessorEditor> surroundEditor (surroundProcessor.createEditor());
+        surroundEditor->setSize (960, 650);
         int visibleFormatComboCount = 0;
         int visibleSurroundToggleCount = 0;
         juce::ToggleButton* downmixButton = nullptr;
         juce::ToggleButton* dropLfeButton = nullptr;
+        juce::ComboBox* surroundPresetSelector = nullptr;
+        juce::ComboBox* voiceFormatSelector = nullptr;
         std::function<void (juce::Component&)> inspectSurroundEditor;
         inspectSurroundEditor = [&] (juce::Component& component)
         {
@@ -2857,8 +3116,16 @@ int main()
                 return true;
             }();
 
-            if (visible && dynamic_cast<juce::ComboBox*> (&component) != nullptr)
-                ++visibleFormatComboCount;
+            if (visible)
+                if (auto* comboBox = dynamic_cast<juce::ComboBox*> (&component))
+                {
+                    ++visibleFormatComboCount;
+
+                    if (component.getComponentID() == "presetChoice")
+                        surroundPresetSelector = comboBox;
+                    else if (component.getComponentID() == "voiceFormatChoice")
+                        voiceFormatSelector = comboBox;
+                }
 
             if (visible)
             {
@@ -2879,8 +3146,24 @@ int main()
         inspectSurroundEditor (*surroundEditor);
         expect (visibleFormatComboCount == 4,
                 "Surround Dynamics exposes preset, two processing selectors, and Voice Format without Main Format");
+        expect (surroundPresetSelector != nullptr
+                    && surroundPresetSelector->getX() == 326,
+                "minimum-width Surround header anchors presets directly after full branding");
+        expect (voiceFormatSelector != nullptr
+                    && voiceFormatSelector->getProperties()["comboContextLabel"]
+                           .toString() == "VOICE"
+                    && voiceFormatSelector->getHeight() == 36,
+                "Voice Format selector carries its compact context label inside the control");
         expect (visibleSurroundToggleCount == 2,
                 "Surround header exposes Downmix and Drop LFE; VLC order moved to the meter menu");
+        expect (downmixButton != nullptr && dropLfeButton != nullptr
+                    && downmixButton->getY() == dropLfeButton->getY()
+                    && downmixButton->getWidth() == 86
+                    && dropLfeButton->getWidth() == 88
+                    && downmixButton->getHeight() == 34
+                    && dropLfeButton->getHeight() == 34
+                    && downmixButton->getRight() < dropLfeButton->getX(),
+                "Surround Downmix and Drop LFE retain their horizontal header layout");
         expect (downmixButton != nullptr && downmixButton->isEnabled(),
                 "Surround Downmix control is clickable");
         expect (dropLfeButton != nullptr && ! dropLfeButton->isEnabled(),
@@ -2894,6 +3177,7 @@ int main()
 
     constexpr float savedWeightFrequency = 4200.0f;
     setParameter (processor, smart_ducking::parameter_ids::weightFrequencyHz, savedWeightFrequency);
+    setParameter (processor, smart_ducking::parameter_ids::crossoverSlope, 4.0f);
     setParameter (processor, smart_ducking::parameter_ids::widebandBypass, 1.0f);
     setParameter (processor, smart_ducking::parameter_ids::globalBypass, 1.0f);
     setParameter (processor, smart_ducking::parameter_ids::mainChannelOrder, 2.0f);
@@ -2913,6 +3197,11 @@ int main()
                 savedWeightFrequency,
                 0.1f),
             "parameter state round-trip");
+    expect (approximatelyEqual (
+                *restoredProcessor.getParameterState().getRawParameterValue (
+                    smart_ducking::parameter_ids::crossoverSlope),
+                4.0f),
+            "Crossover Slope survives project-state round-trip");
     expect (approximatelyEqual (
                 *restoredProcessor.getParameterState().getRawParameterValue (
                     smart_ducking::parameter_ids::widebandBypass),
@@ -2946,6 +3235,27 @@ int main()
                 && static_cast<bool> (restoredProcessor.getParameterState().state.getProperty (
                     "uiMatrixSymmetryLink", false)),
             "Dynamics/Routing page and symmetry-link UI state survive state round-trip");
+
+    {
+        auto legacyState = processor.getParameterState().copyState();
+        for (int childIndex = legacyState.getNumChildren(); --childIndex >= 0;)
+            if (legacyState.getChild (childIndex).getProperty ("id").toString()
+                == smart_ducking::parameter_ids::crossoverSlope)
+                legacyState.removeChild (childIndex, nullptr);
+
+        juce::MemoryBlock legacyStateData;
+        if (const auto legacyXml = legacyState.createXml())
+            juce::AudioProcessor::copyXmlToBinary (*legacyXml, legacyStateData);
+
+        SmartDuckingAudioProcessor migratedProcessor;
+        migratedProcessor.setStateInformation (legacyStateData.getData(),
+                                                static_cast<int> (legacyStateData.getSize()));
+        expect (approximatelyEqual (
+                    *migratedProcessor.getParameterState().getRawParameterValue (
+                        smart_ducking::parameter_ids::crossoverSlope),
+                    2.0f),
+                "projects saved before Crossover Slope load at 48 dB/oct");
+    }
 
     {
         auto legacyState = processor.getParameterState().copyState();

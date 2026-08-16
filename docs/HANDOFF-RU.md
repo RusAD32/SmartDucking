@@ -54,7 +54,7 @@ Smart Ducking — VST3 для сведения закадровой озвучк
 - Основная DAW: REAPER на Windows.
 - В одном `Smart Ducking.vst3` зарегистрированы два audio-module class.
 
-Текущий снимок — `1.0.0-rc.2`, не финальный релиз. RC2 проверен локально в Debug и Universal Release: `SmartDucking.Processor` и `SmartDucking.VST3Factory` проходят, а официальный pluginval 1.0.4 проходит strictness 5 для обоих классов. Фактическая среда, benchmark и границы ручной проверки записаны в [`validation-1.0-ru.md`](validation-1.0-ru.md). После получения репозитория всё равно необходимо повторить baseline build и tests на своей машине.
+Текущий снимок — `1.0.0-rc.3`, не финальный релиз. RC3 проверен локально в Debug и Universal Release: `SmartDucking.Processor` и `SmartDucking.VST3Factory` проходят. Последний полный официальный pluginval 1.0.4 strictness 5 для обоих классов зафиксирован на RC2; CI текущего проекта намеренно выполняет сборку и публикацию artifacts без validation tests. Фактическая среда, benchmark и границы ручной проверки записаны в [`validation-1.0-ru.md`](validation-1.0-ru.md). После получения репозитория всё равно необходимо повторить baseline build и tests на своей машине.
 
 ## 4. Plugin classes и шины
 
@@ -129,7 +129,7 @@ Factory:
 ```text
 Stereo Main
   → fixed 50 ms Main delay
-  → LR8 crossover
+  → selectable LR4/LR6/LR8/LR10/LR12 crossover
   ├→ low band → STFT-latency delay ───────────────────────────┐
   └→ high band → shared STFT → Main PCE → L/C/R              │
                                 → direct spectral reduction   │
@@ -142,7 +142,7 @@ Stereo Main
 
 ```text
 L/C/R/Ls/Rs
-  → отдельный LR8 crossover каждого канала
+  → отдельный crossover выбранной крутизны для каждого канала
   ├→ delayed protected low
   └→ high → shared STFT
            → direct spectral reduction
@@ -276,7 +276,7 @@ Default matrix:
 
 При тишине sidechain предвыделенная Main history возвращает точный latency-aligned dry signal напрямую: windowing, overlap-add, FFT, PCE, prominence, mask и inverse FFT спят. Для статичных Stereo/NORMAL и Surround/NORMAL с закрытой визуализацией history и fixed delays продвигаются блоками; после дренирования Voice delay/history также полностью пропускаются surround-remap и посэмпловая Voice orchestration. После исчезновения Voice тяжёлый путь остаётся активен до завершения hold, release и overlap-add tail; при пробуждении сохранённой истории достаточно, чтобы не потерять начало реплики.
 
-При закрытом editor spectrum visualization выключается. Offline render отключает spectrum и meters независимо от состояния editor; открытый editor в это время показывает статический `RENDERING`. Overlay читает атомарное host/JUCE-состояние напрямую и снимается без ожидания следующего `processBlock`. Message-thread проверка уже существующего block counter определяет остановившийся audio callback примерно за 200 ms; stale meters и `ACTIVE` очищаются, а вновь открытый editor ждёт свежий блок. Не выполнять display FFT только ради meter или диагностической анимации.
+При закрытом editor spectrum visualization выключается. Offline render отключает spectrum и meters независимо от состояния editor; открытый editor в это время показывает статический `RENDERING`. Overlay читает атомарное host/JUCE-состояние напрямую и снимается без ожидания следующего `processBlock`. Message-thread проверка уже существующего block counter определяет остановившийся audio callback примерно за 200 ms; stale meters и активная статусная лампа очищаются, а вновь открытый editor ждёт свежий блок. Не выполнять display FFT только ради meter или диагностической анимации.
 
 ## 8. Карта исходников
 
@@ -289,7 +289,7 @@ Default matrix:
 | `Source/PowerOfTwoDelayBuffer.h` | Предвыделенная fixed integer-delay ring с mask wrap, двумя taps и block path |
 | `Source/FactoryPresets.h` | Имена и parameter overrides четырёх заводских starting points |
 | `Source/UserPresetStore.cpp/.h` | Атомарное глобальное хранилище пользовательских пресетов и валидация файлов |
-| `Source/LinkwitzRiley8Crossover.h` | Сглаживаемый LR8 из четырёх biquad stages на канал |
+| `Source/LinkwitzRileyCrossover.h` | LR4/LR6/LR8/LR10/LR12, сглаживание frequency и двухбанковый crossfade slope без allocation |
 | `Source/LcrDuckMatrix.h` | 5×5 defaults и maximum aggregation |
 | `Source/SidechainClassifier.h` | Silence/one-sided/dual-mono/stereo fast-path selection |
 | `Source/SidechainEnvelope.h` | dB mapping и Attack/Hold/Release envelope |
@@ -335,7 +335,7 @@ Lookahead является активным параметром 0–50 ms. Он
 - столбцы и подписи meter следуют выбранному физическому порядку каналов;
 - Downmix/Drop LFE видны только в Surround class.
 
-Lookahead находится в Dynamics. Единая группа стадий использует иконку bypass, `LOW / HIGH` для Crossover и `S / Δ` для Wideband/Spectral. LOW/HIGH в QUALITY берутся из latency-aligned LR8-ветвей; в NORMAL применяются те же комплементарные FFT-веса, что и в реальной обработке, поэтому совпадают также фаза и реакция на транзиенты. Рядом с фактическим индикатором `SLEEP / ACTIVE` находится стандартный VST3 Global Bypass: он сохраняет channel-order routing и Downmix/Drop LFE, после fade останавливает тяжёлый DSP и прогревает wet path перед выходом. Stage C также завершён:
+Lookahead находится в Dynamics. Единая группа стадий использует иконку bypass, `LOW / HIGH` для Crossover и `S / Δ` для Wideband/Spectral. LOW/HIGH в QUALITY берутся из latency-aligned LR4/LR6/LR8/LR10/LR12-ветвей выбранной крутизны; в NORMAL применяются те же комплементарные FFT-веса, что и в реальной обработке, поэтому совпадают также фаза и реакция на транзиенты. Крутизна `24/36/48/60/72 dB/oct` (default 48) меняется колесом или macOS trackpad над crossover-маркером/подписью и сохраняется как host parameter. В UI используются ASCII-дефисы. Стандартный VST3 Global Bypass находится справа во втором ряду, после трёх стадий; в header остаётся только статусная лампа без текста. Это сдвигает controls вправо и сохраняет логотип полной ширины. Bypass сохраняет channel-order routing и Downmix/Drop LFE, после fade останавливает тяжёлый DSP и прогревает wet path перед выходом. Stage C также завершён:
 
 - weighting EQ редактируется одной draggable parametric node без дублирующих rotary controls;
 - `L/R LINK` пространственно отражает только ручные изменения матрицы;

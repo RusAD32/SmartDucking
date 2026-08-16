@@ -1,6 +1,6 @@
 # Smart Ducking VST3
 
-> Актуализация для `1.0.0-rc.2`: этот файл сохраняет исходную структуру v0.1, но выполненные разделы приведены к фактическому release-поведению. Один `Smart Ducking.vst3` регистрирует два класса — `Smart Ducking (Stereo)` с шинами `2 + 6 + 2` и `Smart Ducking (Surround)` с шинами `6 + 6 + 6`. Main задаётся классом; Voice выбирается как Stereo/Surround и всегда поступает по физической 5.1-шине. DSP-код обоих классов общий. Для деталей реализации приоритет имеют `ARCHITECTURE.md`, тесты и validation record.
+> Актуализация для `1.0.0-rc.3`: этот файл сохраняет исходную структуру v0.1, но выполненные разделы приведены к фактическому release-поведению. Один `Smart Ducking.vst3` регистрирует два класса — `Smart Ducking (Stereo)` с шинами `2 + 6 + 2` и `Smart Ducking (Surround)` с шинами `6 + 6 + 6`. Main задаётся классом; Voice выбирается как Stereo/Surround и всегда поступает по физической 5.1-шине. DSP-код обоих классов общий. Для деталей реализации приоритет имеют `ARCHITECTURE.md`, тесты и validation record.
 
 ## Техническая спецификация v0.1
 
@@ -46,7 +46,7 @@
 MAIN STEREO
     │
     ▼
-Linkwitz–Riley crossover, 48 dB/oct
+Linkwitz–Riley crossover, selectable 24/36/48/60/72 dB/oct
     ├──────── LOW STEREO ───────────────► fixed delay ────────────────┐
     │                                                                 │
     └──────── HIGH STEREO                                             │
@@ -96,8 +96,8 @@ Channel classifier
 
 ### 5.1 Кроссовер
 
-- Тип: minimum-phase Linkwitz–Riley 8-го порядка.
-- Крутизна: 48 dB/oct.
+- Тип: selectable minimum-phase Linkwitz–Riley 4/6/8/10/12-го порядка.
+- Крутизна: 24/36/48/60/72 dB/oct; по умолчанию 48 dB/oct.
 - Частота по умолчанию: 92 Hz.
 - Пользовательский диапазон: 50–180 Hz.
 - Низкая полоса остаётся в исходном stereo и не подвергается PCE, широкополосному дакингу или спектральному подавлению.
@@ -377,7 +377,7 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 
 Приостанавливаются:
 
-- внешний LR8 в NORMAL;
+- внешний time-domain Linkwitz–Riley crossover в NORMAL;
 - FFT-анализ оригинала;
 - PCE оригинала и Voice;
 - расчёт спектральной gain mask;
@@ -458,6 +458,7 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 ### 14.1 Кроссовер
 
 - Ровная амплитуда суммы полос без провала или подъёма около crossover.
+- Для всех пяти slope Low и High пересекаются на −6.02 dB и дают комплементарную сумму; LR6/LR10 используют инверсию High.
 - Отсутствие слышимого изменения тембра при отсутствии дакинга.
 - Стабильная импульсная характеристика.
 - Null с исходником не обязателен из-за фазового вращения minimum-phase crossover.
@@ -496,11 +497,11 @@ SLEEP → WAKING → ACTIVE → TAIL → SLEEP
 
 ## 15. Диагностические функции
 
-Текущий resizable editor постоянно отображает Main/Voice/Output meters и независимые wideband/spectral gain-reduction meters. Две прямые страницы `DYNAMICS` и `ROUTING` заменяют старую иерархию Simple/Advanced/Spectrum. Crossover, Spectral Low и Spectral High редактируются маркерами анализатора; Dynamics также содержит Lookahead, FFT Resolution и `QUALITY / NORMAL`. Matrix использует линейные процентные слайдеры, общие заголовки строк/столбцов и динамические размеры 3×3, 3×5, 5×3 или 5×5.
+Текущий resizable editor постоянно отображает Main/Voice/Output meters и независимые wideband/spectral gain-reduction meters. Две прямые страницы `DYNAMICS` и `ROUTING` заменяют старую иерархию Simple/Advanced/Spectrum. Crossover, Spectral Low и Spectral High редактируются маркерами анализатора; колесо над Crossover-маркером выбирает slope 24/36/48/60/72 dB/oct, а подпись и закешированная кривая показывают выбранное значение. Dynamics также содержит Lookahead, FFT Resolution и `QUALITY / NORMAL`. Matrix использует линейные процентные слайдеры, общие заголовки строк/столбцов и динамические размеры 3×3, 3×5, 5×3 или 5×5.
 
 Weight Frequency/Gain/Q редактируются одной parametric node: drag меняет frequency/gain, Shift-drag или wheel меняет Q, double-click возвращает defaults. `L/R LINK` — только инструмент ручного редактирования и не зеркалит host automation.
 
-В единой группе стадий bypass обозначен векторной иконкой. Crossover предлагает `Bypass / LOW / HIGH`: в QUALITY monitor-полосы берутся из выровненных по latency LR8-ветвей, а в NORMAL — из тех же комплементарных FFT-весов, которыми реально разделяется сигнал при обработке. Оба режима исключают LFE. Wideband и Spectral предлагают `Bypass / S / Δ`, причём Delta возвращает удалённый сигнал своей стадии. Monitor Mode взаимо исключает режимы прослушивания. Рядом с фактическим индикатором heavy engine `SLEEP / ACTIVE` находится отдельный Global Bypass: стандартный VST3-параметр обходит ducking и monitor paths, но сохраняет Main/Output remapping, Downmix и Drop LFE. После завершения fade тяжёлый DSP не вычисляется; при выходе wet path сначала прогревается на полную заявленную latency.
+В единой группе стадий bypass обозначен векторной иконкой. Crossover предлагает `Bypass / LOW / HIGH`: в QUALITY monitor-полосы берутся из выровненных по latency LR4/LR6/LR8/LR10/LR12-ветвей выбранной крутизны, а в NORMAL — из тех же комплементарных FFT-весов, которыми реально разделяется сигнал при обработке. Крутизна меняется колесом или macOS trackpad над маркером/подписью; видимые разделители используют ASCII-дефис. Оба режима исключают LFE. Wideband и Spectral предлагают `Bypass / S / Δ`, причём Delta возвращает удалённый сигнал своей стадии. Monitor Mode взаимо исключает режимы прослушивания. В правой части второго ряда, после трёх стадий, находится отдельный Global Bypass: стандартный VST3-параметр обходит ducking и monitor paths, но сохраняет Main/Output remapping, Downmix и Drop LFE. В header остаётся только компактная статусная лампа heavy engine без текста, что освобождает место и сохраняет branding полной ширины. После завершения fade тяжёлый DSP не вычисляется; при выходе wet path сначала прогревается на полную заявленную latency.
 
 Для Main, Voice Surround и Output без Downmix доступны порядки ITU/SMPTE, REAPER/VLC, Film и DTS/MPEG-D. Меню открываются левой кнопкой на соответствующем meter и имеют видимый индикатор; столбцы и подписи meter следуют выбранному физическому порядку.
 

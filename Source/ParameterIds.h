@@ -3,6 +3,7 @@
 namespace smart_ducking::parameter_ids
 {
 inline constexpr auto crossoverHz = "crossoverHz";
+inline constexpr auto crossoverSlope = "crossoverSlope";
 inline constexpr auto duckDepthDb = "duckDepthDb";
 inline constexpr auto attackMs = "attackMs";
 inline constexpr auto holdMs = "holdMs";

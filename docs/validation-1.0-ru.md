@@ -1,8 +1,8 @@
 # Smart Ducking 1.0 — validation record
 
-Дата: 14 августа 2026 года.
+Дата актуализации: 16 августа 2026 года.
 
-Статус: `1.0.0-rc.2`, release candidate; финальный релиз `1.0.0` ещё не зафиксирован.
+Статус: `1.0.0-rc.3`, release candidate; финальный релиз `1.0.0` ещё не зафиксирован.
 
 ## Сборка
 
@@ -19,7 +19,9 @@ Debug arm64 и Universal Release собраны полностью. В обеи�
 - `SmartDucking.Processor` — DSP, state, editor, routing, monitor modes, Global Bypass, PDC, factory/user presets и A/B, атомарный save/load/overwrite/delete с отбраковкой повреждённых preset-файлов, extracted smoothers/PCE history, random/boundary block sizes, finite output и realtime/offline-style numerical equivalence;
 - `SmartDucking.VST3Factory` — загрузка готового binary, два различных class ID, имена/версия/категория, layouts `2 + 6 + 2` и `6 + 6 + 6`, ровно один параметр с VST3-флагом `kIsBypass`, processing, state, default latency и finite tail 96 000 samples при 48 kHz.
 
-Точная PDC автоматически проверяется при 44.1, 48, 88.2 и 96 kHz. Тест 88.2 kHz добавлен в Stage D. Для NORMAL отдельный transient/multitone regression test проверяет, что `Crossover Low + Crossover High` восстанавливают latency-aligned full-band STFT output: monitor использует ту же FFT-кривую, что и обработка, а не LR8-подстановку. RC2 также сравнивает sample/block sleeping paths, переход `sleep → Voice wake → release → sleep`, переменные размеры блоков и оба integer-delay tap. Debug arm64 проходит с AddressSanitizer и UndefinedBehaviorSanitizer.
+RC3 дополнительно покрывает factory/user preset browser, сохранение пользовательских presets, выбранную крутизну Crossover `24/36/48/60/72 dB/oct`, общий комплементарный расчёт NORMAL/UI, LR4/LR6/LR8/LR10/LR12 в QUALITY, tiny smooth-delta macOS trackpad по всей вертикальной drag-зоне маркера и адаптивную геометрию header/двух отдельных карточек второго ряда. Финальная локальная Universal Release сборка прошла `SmartDucking.Processor` и `SmartDucking.VST3Factory` (`2/2`), `codesign --verify --deep --strict`; установленный VST3 побитово совпал со сборочным executable по SHA-256. Пользователь подтвердил итоговую визуальную компоновку перед фиксацией RC3.
+
+Точная PDC автоматически проверяется при 44.1, 48, 88.2 и 96 kHz. Тест 88.2 kHz добавлен в Stage D. Для всех `24/36/48/60/72 dB/oct` отдельный transient/multitone regression test проверяет, что в NORMAL `Crossover Low + Crossover High` восстанавливают latency-aligned full-band STFT output: monitor использует ту же FFT-кривую, что и обработка. Отдельные тесты QUALITY проверяют точку пересечения −6.02 dB, фактическое затухание и плоскую all-pass сумму LR4/LR6/LR8/LR10/LR12. RC2 также сравнивает sample/block sleeping paths, переход `sleep → Voice wake → release → sleep`, переменные размеры блоков и оба integer-delay tap. Debug arm64 проходит с AddressSanitizer и UndefinedBehaviorSanitizer.
 
 ## pluginval
 
@@ -52,7 +54,9 @@ Debug arm64 и Universal Release собраны полностью. В обеи�
 
 Предыдущие диапазоны `0.53–0.81%` не являются сравнимым baseline: helper использовал `setValue()` без host/APVTS notification, поэтому подписи QUALITY/NORMAL/x1/x2/x4 не гарантировали фактическое переключение raw DSP-параметров. Surround-case также оставлял Voice в Stereo и использовал постоянный sidechain вместо тестового сигнала. Текущий benchmark использует `setValueNotifyingHost()`, проверяемые FFT counters и routing, соответствующий подписи case.
 
-Отдельный x2 benchmark подтверждает ветвление monitor path: в QUALITY Crossover Low работает без STFT (`main-fft=0`, `sidechain-fft=0`), а в NORMAL выполняет только main STFT (`main-fft=1064`, `sidechain-fft=0`) и не запускает LR8 или sidechain analysis.
+Отдельный x2 benchmark подтверждает ветвление monitor path: в QUALITY Crossover Low работает без STFT (`main-fft=0`, `sidechain-fft=0`), а в NORMAL выполняет только main STFT (`main-fft=1064`, `sidechain-fft=0`) и не запускает time-domain crossover или sidechain analysis.
+
+Slope-matrix того же Crossover Low benchmark подтверждает ожидаемую стоимость. В NORMAL все пять значений используют один FFT и остаются в пределах шума измерения: Stereo `0.28–0.29%`, Surround `0.55–0.56%`. В QUALITY стоимость растёт вместе с числом секций: Stereo от `0.27%` на 24 dB/oct до `0.33%` на 72 dB/oct, Surround от `0.60%` до `0.75%`; стандартные 48 dB/oct дали соответственно `0.29%` и `0.65%`. LR6/LR10 выполняют first-order sections сокращённой арифметикой, а не полным biquad path.
 
 RC2 использует отдельную power-of-two ring-buffer для фиксированных integer PDC delay. Буфер хранит Lookahead и полный PDC как два tap одной истории Main, поэтому исключены дублирующие записи и дорогой modulo на каждом сэмпле; объём предвыделенной памяти намеренно округляется вверх. При 48 kHz/x4 это увеличивает потребление памяти примерно на 0.25 MB на экземпляр по сравнению с минимально возможным ring size.
 
@@ -82,4 +86,4 @@ RC2 использует отдельную power-of-two ring-buffer для фи
 
 ## Realtime-safety audit
 
-В steady-state `processBlock` нет файловых операций, mutex/wait, создания FFT или resize больших контейнеров. Буферы, delay lines, histories и FFT geometry предвыделяются в prepare/configuration path. Фиксированные Main/PDC delay используют power-of-two storage и block copies; интерполируемый Voice Lookahead остаётся JUCE DelayLine. Обмен с editor и диагностикой ограничен atomics и fixed snapshots; закрытый editor и offline render отключают spectrum/meter capture. При offline render открытый editor показывает статический overlay `RENDERING`, который снимается сразу по host/JUCE state без дополнительного audio block. Reopen/pause stale-state устраняется ожиданием свежего block counter и quiescent-сбросом meters/`ACTIVE`.
+В steady-state `processBlock` нет файловых операций, mutex/wait, создания FFT или resize больших контейнеров. Буферы, delay lines, histories и FFT geometry предвыделяются в prepare/configuration path. Фиксированные Main/PDC delay используют power-of-two storage и block copies; интерполируемый Voice Lookahead остаётся JUCE DelayLine. Обмен с editor и диагностикой ограничен atomics и fixed snapshots; закрытый editor и offline render отключают spectrum/meter capture. При offline render открытый editor показывает статический overlay `RENDERING`, который снимается сразу по host/JUCE state без дополнительного audio block. Reopen/pause stale-state устраняется ожиданием свежего block counter и quiescent-сбросом meters/активной лампы.

@@ -12,6 +12,7 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include "CrossoverMagnitude.h"
 #include "LcrDuckMatrix.h"
 #include "PceHistory.h"
 #include "SidechainClassifier.h"
@@ -51,6 +52,7 @@ public:
         float releaseMs = 200.0f;
         float duckDepthDb = 0.0f;
         float crossoverHz = 92.0f;
+        float crossoverSlopeDbPerOctave = 48.0f;
         float crossoverStageMix = 1.0f;
         float widebandStageMix = 1.0f;
         float spectralStageMix = 1.0f;
@@ -366,7 +368,9 @@ public:
             || changed (newParameters.weightQ, parameters.weightQ))
             weightingCurveDirty = true;
 
-        if (changed (newParameters.crossoverHz, parameters.crossoverHz))
+        if (changed (newParameters.crossoverHz, parameters.crossoverHz)
+            || changed (newParameters.crossoverSlopeDbPerOctave,
+                        parameters.crossoverSlopeDbPerOctave))
             economyCrossoverCurveDirty = true;
 
         parameters = newParameters;
@@ -1521,21 +1525,13 @@ private:
                                  * static_cast<float> (sampleRate)
                                  / static_cast<float> (fftSize);
 
-            if (frequency <= 0.0f)
-            {
-                cachedEconomyHighWeight[static_cast<size_t> (bin)] = 0.0f;
-                continue;
-            }
-
-            // Magnitude-complementary LR8-style transition.  At the crossover
-            // both branches are 0.5 (-6.02 dB), L + H is exactly one, and the
-            // asymptotic high-pass slope is 48 dB/octave.
-            const auto ratio = frequency / cutoff;
-            const auto ratioSquared = ratio * ratio;
-            const auto ratioFourth = ratioSquared * ratioSquared;
-            const auto ratioEighth = ratioFourth * ratioFourth;
+            // Magnitude-complementary LR-style transition. At the crossover
+            // both branches are 0.5 (-6.02 dB), L + H is exactly one. Orders
+            // 4/6/8/10/12 correspond to 24/36/48/60/72 dB per octave.
             cachedEconomyHighWeight[static_cast<size_t> (bin)] =
-                ratioEighth / (1.0f + ratioEighth);
+                crossoverHighMagnitude (frequency,
+                                        cutoff,
+                                        parameters.crossoverSlopeDbPerOctave);
         }
 
         economyCrossoverCurveDirty = false;

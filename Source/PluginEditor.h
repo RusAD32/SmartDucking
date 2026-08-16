@@ -95,6 +95,7 @@ private:
     };
     juce::TextButton globalBypassButton;
     juce::Component stageControlPanel;
+    std::unique_ptr<juce::Component> globalBypassPanel;
     std::array<juce::Label, 3> stageLabels;
     std::array<juce::TextButton, 9> stageButtons {
         juce::TextButton {}, juce::TextButton { "LOW" },
@@ -120,7 +121,6 @@ private:
     juce::ComboBox fftChoice;
     juce::Label processingModeLabel;
     juce::ComboBox processingModeChoice;
-    juce::Label voiceFormatLabel;
     juce::ComboBox voiceFormatChoice;
     juce::ToggleButton downmixToggle { "DOWNMIX" };
     juce::ToggleButton dropLfeToggle { "DROP LFE" };
@@ -160,7 +160,6 @@ private:
 
     Page currentPage = Page::dynamics;
     juce::Rectangle<float> duckingLampBounds;
-    juce::Rectangle<float> activityStatusBounds;
     juce::Rectangle<float> mainInputMeterBounds;
     juce::Rectangle<float> voiceInputMeterBounds;
     juce::Rectangle<float> outputMeterBounds;

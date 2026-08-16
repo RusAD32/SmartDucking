@@ -1,14 +1,14 @@
 # Smart Ducking — сводный план разработки
 
-Статус документа: этапы A–D и RC2-оптимизация завершены; текущий снимок — release candidate `1.0.0-rc.2`, не финальный релиз `1.0.0`.
+Статус документа: этапы A–D и RC2-оптимизация завершены; текущий снимок — release candidate `1.0.0-rc.3`, не финальный релиз `1.0.0`.
 
-Дата актуализации: 14 августа 2026 года.
+Дата актуализации: 16 августа 2026 года.
 
-Прогресс: этап A реализован 10 августа 2026 года, ручной smoke-test сборки в REAPER пройден пользователем 12 августа. Этап B реализован 12 августа и уточнён 13 августа: добавлены независимые stage bypass, взаимно исключающий Monitor Mode, сглаженные paths с постоянной PDC, комплементарные `LOW / HIGH` для Crossover без LFE, фактический индикатор `SLEEP / ACTIVE` и стандартный Global Bypass. LOW/HIGH используют latency-aligned LR8-ветви в QUALITY и реальные комплементарные FFT-веса обработки в NORMAL. Global Bypass сохраняет channel-order routing и Downmix/Drop LFE, а после fade останавливает тяжёлый DSP и прогревает wet path перед возвратом. Этап C реализован 12 августа 2026 года: weighting перенесён на интерактивную ноду, пять конечных matrix controls сглаживаются на частоте STFT, добавлен ручной `L/R LINK`, routing-aware Output meter, сохранение UI-state и короткие переходы Voice/channel-order/Downmix/LFE.
+Прогресс: этап A реализован 10 августа 2026 года, ручной smoke-test сборки в REAPER пройден пользователем 12 августа. Этап B реализован 12 августа и уточнён 16 августа: добавлены независимые stage bypass, взаимно исключающий Monitor Mode, сглаженные paths с постоянной PDC, комплементарные `LOW / HIGH` для Crossover без LFE, статусная лампа heavy engine без текста и стандартный Global Bypass. LOW/HIGH используют выбранные latency-aligned LR4/LR6/LR8/LR10/LR12-ветви в QUALITY и реальные комплементарные FFT-веса обработки в NORMAL; slope выбирается из `24/36/48/60/72 dB/oct` колесом или macOS trackpad над маркером/подписью, default 48. Header controls сдвинуты вправо, чтобы branding не сжимался; видимые разделители используют ASCII-дефис. Global Bypass сохраняет channel-order routing и Downmix/Drop LFE, а после fade останавливает тяжёлый DSP и прогревает wet path перед возвратом. Этап C реализован 12 августа 2026 года: weighting перенесён на интерактивную ноду, пять конечных matrix controls сглаживаются на частоте STFT, добавлен ручной `L/R LINK`, routing-aware Output meter, сохранение UI-state и короткие переходы Voice/channel-order/Downmix/LFE.
 
 Этап D завершён 12 августа: расширены processor/factory tests, добавлены pluginval/CI и CPU benchmark, вынесены PCE history и frame smoothers, удалён dead UI code, реализованы factory presets и persistent A/B, синхронизирована документация.
 
-Оптимизация RC2 начата 14 августа и дополнена 15 августа: weighting curve пересчитывается только при изменении Frequency/Gain/Q или FFT geometry; отключённые stages не запускают ненужные ветви; в NORMAL внешний LR8 спит, кроме фактической работы QUALITY; при тишине Voice статичные Stereo/NORMAL и Surround/NORMAL тракты используют блочное продвижение предвыделенных histories вместо посэмпловой orchestration, а после дренирования Voice полностью пропускаются его delay и channel-order remap; фиксированные Lookahead/PDC delays объединены в power-of-two ring-buffer с двумя taps. Offline render отключает spectrum, meters и GUI updates, а открытый editor показывает статический `RENDERING`; overlay следует host-состоянию без следующего audio block, stale meters/`ACTIVE` очищаются при quiescent callback и повторном открытии. Пользовательский render-test в REAPER ускорился с `86x` до `140x realtime` (baseline без плагина — `150x`).
+Оптимизация RC2 начата 14 августа и дополнена 16 августа: weighting curve пересчитывается только при изменении Frequency/Gain/Q или FFT geometry; отключённые stages не запускают ненужные ветви; в NORMAL внешний time-domain crossover спит, а selectable slope меняет только закешированные веса общего FFT; при тишине Voice статичные Stereo/NORMAL и Surround/NORMAL тракты используют блочное продвижение предвыделенных histories вместо посэмпловой orchestration, а после дренирования Voice полностью пропускаются его delay и channel-order remap; фиксированные Lookahead/PDC delays объединены в power-of-two ring-buffer с двумя taps. Offline render отключает spectrum, meters и GUI updates, а открытый editor показывает статический `RENDERING`; overlay следует host-состоянию без следующего audio block, stale meters/`ACTIVE` очищаются при quiescent callback и повторном открытии. Пользовательский render-test в REAPER ускорился с `86x` до `140x realtime` (baseline без плагина — `150x`).
 
 Этот документ объединяет решения из первоначальной технической спецификации, результаты уже выполненных этапов, анализ актуального кода и последующие изменения концепции. При расхождении старых разделов `technical-spec-v0.1-ru.md` с этим планом приоритет имеет этот документ. После реализации соответствующего этапа фактическое поведение должно быть перенесено в README, техническую спецификацию и описание архитектуры.
 
@@ -45,7 +45,7 @@
 - ручной выбор Voice Stereo/Surround;
 - ITU/SMPTE, REAPER/VLC, Film и DTS/MPEG-D channel order для Main, Voice Surround и Output без Downmix;
 - принудительный stereo downmix и опциональный Drop LFE;
-- LR8 crossover и защищённая низкая полоса;
+- selectable LR4/LR6/LR8/LR10/LR12 crossover и защищённая низкая полоса;
 - stereo-to-LCR Phantom Center Extraction для Main и Voice;
 - прямое Variant-A spectral reduction в L/C/R/Ls/Rs;
 - регулируемая матрица wideband ducking с maximum-агрегацией;
@@ -76,7 +76,7 @@ Simple/Advanced и отдельная Spectrum page удалены. Фактич
 
 Пользовательский интерфейс остаётся без изменений:
 
-- `QUALITY` — time-domain LR8 и 4× STFT overlap;
+- `QUALITY` — time-domain LR4/LR6/LR8/LR10/LR12 и 4× STFT overlap;
 - `NORMAL` — complementary FFT-domain crossover и 2× overlap.
 
 Для новых экземпляров default — `NORMAL`. Старые проекты и пресеты сохраняют записанный индекс режима.
@@ -215,7 +215,7 @@ Voice Format, Main/Voice/Output order, Downmix и Drop LFE не меняют FFT
 
 Так host automation не сможет создать неоднозначную комбинацию нескольких Solo/Delta, а UI по-прежнему будет выглядеть как три группы кнопок.
 
-В QUALITY Crossover LOW/HIGH используют delayed LR8 branches. В NORMAL они используют прогретый WOLA path и те же комплементарные FFT-веса, что и реальная обработка; это сохраняет её фазу и реакцию на транзиенты при live switch. Global Bypass плавно обходит processing и monitor paths, сохраняя Main/Output mapping, Downmix и Drop LFE. После fade тяжёлый DSP останавливается; при выходе он прогревается на полную PDC до fade обратно. Параметр сохраняется в project state, но не входит в factory preset и A/B recall.
+В QUALITY Crossover LOW/HIGH используют delayed branches выбранного LR4/LR6/LR8/LR10/LR12. В NORMAL они используют прогретый WOLA path и те же комплементарные FFT-веса выбранного порядка, что и реальная обработка; это сохраняет её фазу и реакцию на транзиенты при live switch. Crossover Slope — host choice `24/36/48/60/72 dB/oct`, default 48; он входит в project/user preset/A/B state, а старый state без параметра мигрирует на 48. Global Bypass плавно обходит processing и monitor paths, сохраняя Main/Output mapping, Downmix и Drop LFE. После fade тяжёлый DSP останавливается; при выходе он прогревается на полную PDC до fade обратно. Global Bypass сохраняется в project state, но не входит в factory preset и A/B recall.
 
 ## 7. SLEEP/ACTIVE и диагностическая индикация
 
@@ -370,7 +370,7 @@ pluginval подключается только как dev/CI-инструмен
 - `docs/ARCHITECTURE.md` — фактический signal flow и realtime-ограничения;
 - этот implementation plan — выполненные пункты и изменившиеся решения.
 
-README, architecture, handoff и validation record синхронизированы с RC2. `technical-spec-v0.1-ru.md` намеренно сохранён как исходная спецификация и не является источником истины для изменившихся решений 1.0.
+README, architecture, handoff и validation record синхронизированы с RC3. `technical-spec-v0.1-ru.md` намеренно сохранён как исходная спецификация и не является источником истины для изменившихся решений 1.0.
 
 ## 12. Рекомендуемая последовательность реализации
 
@@ -388,8 +388,8 @@ README, architecture, handoff и validation record синхронизирова�
 2. [x] Реализовать DSP Bypass/Solo/Delta для Crossover, Wideband и Spectral.
 3. [x] Добавить единую UI-группу с иконкой bypass, `LOW / HIGH` для Crossover и `S / Δ` для Wideband/Spectral.
 4. [x] Проверить click-free transitions и неизменную PDC.
-5. [x] Перевести верхний индикатор на фактический SLEEP/ACTIVE.
-6. [x] Добавить стандартный Global Bypass рядом с SLEEP/ACTIVE и latency-aligned dry path.
+5. [x] Перевести верхнюю лампу без текста на фактический SLEEP/ACTIVE.
+6. [x] Добавить стандартный Global Bypass в правую часть второго ряда и latency-aligned dry path.
 
 ### Этап C — анализатор и матрица
 
@@ -415,7 +415,7 @@ README, architecture, handoff и validation record синхронизирова�
 ### RC2 — CPU/memory optimization и offline render — реализовано
 
 1. [x] Закешировать weighting curve и static parameter decisions.
-2. [x] Не выполнять LR8/FFT/PCE/mask/meter/spectrum работу, когда соответствующая ветвь не нужна.
+2. [x] Не выполнять time-domain crossover/FFT/PCE/mask/meter/spectrum работу, когда соответствующая ветвь не нужна.
 3. [x] Заменить sleeping dry WOLA на прямую latency ring history и добавить блочный silent-Surround path.
 4. [x] Объединить фиксированные Main Lookahead/PDC histories и округлить storage до степени двойки ради mask-based wrap.
 5. [x] Отключить визуализацию и GUI updates во время offline render, сохранив статическую индикацию `RENDERING`.
@@ -434,7 +434,7 @@ README, architecture, handoff и validation record синхронизирова�
 - stage/global bypass и monitor modes работают без щелчков и с постоянной задержкой;
 - Crossover LOW/HIGH воспроизводят комплементарные полосы без LFE;
 - matrix automation не создаёт zipper noise;
-- SLEEP/ACTIVE отражает фактическое состояние тяжёлой ветви;
+- статусная лампа отражает фактическое состояние тяжёлой ветви без текстовой подписи;
 - закрытый GUI не оставляет активной визуализационную FFT-нагрузку;
 - offline render не рассчитывает spectrum/meters и не обновляет динамический UI;
 - realtime и offline render совпадают в пределах численной точности;

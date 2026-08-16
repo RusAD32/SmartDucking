@@ -31,7 +31,8 @@ void runCase (smart_ducking::PluginVariant variant,
               bool visualisationEnabled,
               Scenario scenario = Scenario::active,
               bool offlineRendering = false,
-              bool surroundVoice = false)
+              bool surroundVoice = false,
+              int crossoverSlopeIndex = 2)
 {
     constexpr double sampleRate = 48000.0;
     constexpr int blockSize = 512;
@@ -42,6 +43,8 @@ void runCase (smart_ducking::PluginVariant variant,
                   static_cast<float> (processingMode));
     setParameter (processor, smart_ducking::parameter_ids::fftResolution,
                   static_cast<float> (resolution));
+    setParameter (processor, smart_ducking::parameter_ids::crossoverSlope,
+                  static_cast<float> (crossoverSlopeIndex));
     if (variant == smart_ducking::PluginVariant::surround || surroundVoice)
         setParameter (processor, smart_ducking::parameter_ids::voiceFormat, 1.0f);
     if (scenario == Scenario::stagesBypassed)
@@ -123,6 +126,9 @@ void runCase (smart_ducking::PluginVariant variant,
               << (offlineRendering ? "-offline" : "")
               << (surroundVoice ? "-surround-voice" : "")
               << '\t' << scenarioName
+              << (scenario == Scenario::crossoverLowMonitor
+                      ? "-" + std::to_string (24 + 12 * crossoverSlopeIndex) + "dB-oct"
+                      : "")
               << '\t' << std::fixed << std::setprecision (2)
               << realtimeFactor << "x realtime"
               << '\t' << 100.0 / realtimeFactor << "% single-core"
@@ -168,5 +174,13 @@ int main()
     for (const auto variant : { smart_ducking::PluginVariant::stereo,
                                 smart_ducking::PluginVariant::surround })
         for (int mode = 0; mode < 2; ++mode)
-            runCase (variant, mode, 1, false, Scenario::crossoverLowMonitor);
+            for (int slopeIndex = 0; slopeIndex < 5; ++slopeIndex)
+                runCase (variant,
+                         mode,
+                         1,
+                         false,
+                         Scenario::crossoverLowMonitor,
+                         false,
+                         false,
+                         slopeIndex);
 }
