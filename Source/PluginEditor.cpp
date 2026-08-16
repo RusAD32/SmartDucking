@@ -1063,9 +1063,12 @@ struct SmartDuckingAudioProcessorEditor::SpectrumPanel final : juce::Component,
             if (auto* slope = state.getParameter (
                     smart_ducking::parameter_ids::crossoverSlope))
             {
-                const auto direction = wheel.deltaY != 0.0f ? wheel.deltaY : wheel.deltaX;
+                constexpr auto wheelEpsilon = 1.0e-7f;
+                const auto direction = std::abs (wheel.deltaY) > wheelEpsilon
+                    ? wheel.deltaY
+                    : wheel.deltaX;
 
-                if (direction != 0.0f)
+                if (std::abs (direction) > wheelEpsilon)
                 {
                     if (crossoverWheelAccumulator * direction < 0.0f)
                         crossoverWheelAccumulator = 0.0f;

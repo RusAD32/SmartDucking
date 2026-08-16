@@ -60,6 +60,8 @@ ctest --preset linux-release-x64
 
 The factory test dynamically loads the finished VST3 and verifies both audio-module classes, their bus layouts, metadata, processing, state, latency, and distinct class IDs. `SmartDucking.Processor` covers the DSP contract, safe configuration, variable-block and realtime/offline-style equivalence, editor behaviour, presets, and A/B state.
 
+On MSVC, only `SmartDuckingTests.exe` reserves an 8 MiB stack. The off-screen editor test creates a native JUCE image, which initialises Direct3D; some Windows GPU drivers exceed the default 1 MiB console stack during that one-time setup. This setting does not affect either VST3 class or their runtime memory use.
+
 To enable the optional external pluginval target, provide a pluginval executable while configuring:
 
 ```sh

@@ -430,6 +430,8 @@ cmake --build --preset windows-local-release --target SmartDucking_All SmartDuck
 ctest --preset windows-local-release
 ```
 
+Только для `SmartDuckingTests.exe` при MSVC линкер резервирует стек 8 MiB. Off-screen тест редактора создаёт native JUCE image, что впервые инициализирует Direct3D; некоторые Windows GPU-драйверы переполняют стандартный стек console executable размером 1 MiB на этом этапе. Настройка не применяется к VST3 и не меняет его runtime memory/CPU.
+
 Артефакты:
 
 ```text

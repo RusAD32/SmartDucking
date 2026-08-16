@@ -69,6 +69,12 @@ jobs:
     runs-on: [self-hosted, Linux, X64, repo-SmartDucking]
     steps:
       - uses: actions/checkout@v7
+      - name: Ensure headless display tools
+        run: |
+          if ! command -v xvfb-run >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y xauth xvfb
+          fi
       - name: Configure Linux x64 Release
         run: cmake --preset linux-release-x64
       - name: Build Release and unit tests

@@ -261,6 +261,14 @@ if (SMART_DUCKING_BUILD_TESTS)
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
 
+    if (MSVC)
+        # The off-screen editor test creates a native JUCE image. On Windows,
+        # that initialises Direct3D, and some GPU drivers need more stack than
+        # the 1 MiB console default after this test's large fixture frame.
+        # This changes only the test executable, never the plug-in binary.
+        target_link_options(SmartDuckingTests PRIVATE /STACK:8388608)
+    endif()
+
     add_test(NAME SmartDucking.Processor COMMAND SmartDuckingTests)
 
     juce_add_console_app(SmartDuckingBenchmark
