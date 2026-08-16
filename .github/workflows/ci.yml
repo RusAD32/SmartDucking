@@ -10,14 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Configure Universal Release
-        run: >-
-          cmake --preset macos-release-universal
-          -DSMART_DUCKING_BUILD_TESTS=OFF
-      - name: Build Universal Release VST3
+        run: cmake --preset macos-release-universal
+      - name: Build Universal Release and unit tests
         run: >-
           cmake --build --preset macos-release-universal
-          --target SmartDucking_VST3
+          --target SmartDucking_VST3 SmartDuckingTests SmartDuckingVST3FactoryTests
           --parallel 4
+      - name: Run unit tests
+        run: ctest --preset macos-release-universal
       - name: Stage macOS VST3
         run: |
           mkdir -p dist
@@ -38,15 +38,16 @@ jobs:
       - uses: actions/checkout@v7
       - name: Configure Release
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
-        run: >-
-          cmake --preset windows-vs2026
-          -DSMART_DUCKING_BUILD_TESTS=OFF
-      - name: Build Release VST3
+        run: cmake --preset windows-vs2026
+      - name: Build Release and unit tests
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         run: >-
           cmake --build --preset windows-release
-          --target SmartDucking_VST3
+          --target SmartDucking_VST3 SmartDuckingTests SmartDuckingVST3FactoryTests
           --parallel 4
+      - name: Run unit tests
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
+        run: ctest --preset windows-release
       - name: Stage Windows VST3
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         run: |
@@ -69,14 +70,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Configure Linux x64 Release
-        run: >-
-          cmake --preset linux-release-x64
-          -DSMART_DUCKING_BUILD_TESTS=OFF
-      - name: Build Release VST3
+        run: cmake --preset linux-release-x64
+      - name: Build Release and unit tests
         run: >-
           cmake --build --preset linux-release-x64
-          --target SmartDucking_VST3
+          --target SmartDucking_VST3 SmartDuckingTests SmartDuckingVST3FactoryTests
           --parallel 4
+      - name: Run unit tests
+        run: xvfb-run -a ctest --preset linux-release-x64
       - name: Stage Linux VST3
         run: |
           mkdir -p dist

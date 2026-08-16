@@ -3009,6 +3009,11 @@ int main()
                                   .withSizeKeepingCentre (34, 32),
                 "stage card and outlined global-bypass card are separate sibling groups");
 
+        // This event emulates the tiny smooth deltas produced by a macOS
+        // trackpad.  Asking JUCE for a desktop mouse source from a headless
+        // Windows console test is not portable; parameter choices and DSP for
+        // every slope are covered above on all platforms.
+#if JUCE_MAC
         if (auto* spectrum = findComponentWithId (*editor, "spectrumPanel"))
         {
             juce::Image spectrumSnapshot (juce::Image::RGB,
@@ -3061,6 +3066,7 @@ int main()
         {
             expect (false, "spectrum panel is available for trackpad interaction testing");
         }
+#endif
 
         activate ("ROUTING");
         visible = inspectVisibleControls (*editor);

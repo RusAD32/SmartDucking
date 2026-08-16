@@ -54,7 +54,7 @@ Smart Ducking — VST3 для сведения закадровой озвучк
 - Основная DAW: REAPER на Windows.
 - В одном `Smart Ducking.vst3` зарегистрированы два audio-module class.
 
-Текущий снимок — `1.0.0-rc.3`, не финальный релиз. RC3 проверен локально в Debug и Universal Release: `SmartDucking.Processor` и `SmartDucking.VST3Factory` проходят. Последний полный официальный pluginval 1.0.4 strictness 5 для обоих классов зафиксирован на RC2; CI текущего проекта намеренно выполняет сборку и публикацию artifacts без validation tests. Фактическая среда, benchmark и границы ручной проверки записаны в [`validation-1.0-ru.md`](validation-1.0-ru.md). После получения репозитория всё равно необходимо повторить baseline build и tests на своей машине.
+Текущий снимок — `1.0.0-rc.3`, не финальный релиз. RC3 проверен локально в Debug и Universal Release: `SmartDucking.Processor` и `SmartDucking.VST3Factory` проходят. Последний полный официальный pluginval 1.0.4 strictness 5 для обоих классов зафиксирован на RC2; CI текущего проекта собирает VST3, запускает processor/factory tests на macOS, Windows и Linux и только затем публикует artifacts. Фактическая среда, benchmark и границы ручной проверки записаны в [`validation-1.0-ru.md`](validation-1.0-ru.md). После получения репозитория всё равно полезно повторить baseline build и tests на своей машине.
 
 ## 4. Plugin classes и шины
 
@@ -488,7 +488,7 @@ cmake --preset macos-release-universal \
 cmake --build --preset macos-release-universal --target SmartDuckingPluginval
 ```
 
-Target запускает strictness 5 для готового bundle. Обычная сборка от pluginval не зависит. GitHub Actions намеренно выполняет только Release-сборку VST3 на macOS/Windows/Linux и публикует готовые bundle; unit/factory tests, pluginval и benchmark запускаются локально отдельным этапом валидации.
+Target запускает strictness 5 для готового bundle. Обычная сборка от pluginval не зависит. GitHub Actions выполняет Release-сборку VST3 и processor/factory tests на macOS/Windows/Linux, после чего публикует готовые bundle. Pluginval и benchmark запускаются локально отдельным этапом валидации.
 
 ## 13. Realtime safety
 
@@ -517,7 +517,7 @@ Stages A–D завершены, блокирующих известных де�
 
 Ограничения текущего evidence:
 
-1. Локальная проверка этого snapshot выполнена на macOS. CI подтверждает только успешную Release-сборку и упаковку Windows/Linux; функциональную валидацию следует выполнять локально на целевой ОС.
+1. Локальная проверка этого snapshot выполнена на macOS. CI подтверждает Release-сборку, processor/factory tests и упаковку на macOS/Windows/Linux; ручную функциональную валидацию в DAW всё равно следует выполнять на целевой ОС.
 2. Ручной REAPER functional/UI smoke-test и offline render-performance test подтверждены пользователем. Полная listening matrix остаётся отдельной продуктовой приёмкой, а не unit-тестом.
 3. Нотаризация, installer и pluginval strictness 10 не являются обязательным baseline 1.0.
 4. Дальнейшие DSP-эксперименты из post-1.0 плана не должны менять 1.0 state/identity без migration.
