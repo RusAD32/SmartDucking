@@ -16,7 +16,7 @@ DiagnosticLogger::DiagnosticLogger()
         juce::File::userApplicationDataDirectory).getFullPathName();
     logFile = juce::File (juce::SystemStats::getEnvironmentVariable ("LOCALAPPDATA",
                                                                       fallbackDirectory))
-                  .getChildFile ("OnWave")
+                  .getChildFile ("RusAD")
                   .getChildFile ("SmartDucking")
                   .getChildFile (fileName);
     startThread (juce::Thread::Priority::low);

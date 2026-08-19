@@ -20,7 +20,7 @@ UserPresetStore::UserPresetStore (juce::File directory)
 juce::File UserPresetStore::defaultDirectory()
 {
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-        .getChildFile ("OnWave")
+        .getChildFile ("RusAD")
         .getChildFile ("Smart Ducking")
         .getChildFile ("Presets");
 }

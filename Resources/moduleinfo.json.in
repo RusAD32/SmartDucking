@@ -2,8 +2,8 @@
   "Name": "Smart Ducking",
   "Version": "@PROJECT_VERSION@",
   "Factory Info": {
-    "Vendor": "OnWave",
-    "URL": "https://onwavedub.org",
+    "Vendor": "RusAD",
+    "URL": "https://github.com/RusAD32",
     "E-Mail": "",
     "Flags": {
       "Unicode": true,
@@ -13,10 +13,10 @@
   },
   "Classes": [
     {
-      "CID": "ABCDEF019182FAEB4F6E5776536D646B",
+      "CID": "ABCDEF019182FAEB52734144536D646B",
       "Category": "Audio Module Class",
       "Name": "Smart Ducking (Stereo)",
-      "Vendor": "OnWave",
+      "Vendor": "RusAD",
       "Version": "@PROJECT_VERSION@",
       "SDKVersion": "VST 3.8.0",
       "Sub Categories": ["Fx", "Dynamics"],
@@ -25,10 +25,10 @@
       "Snapshots": []
     },
     {
-      "CID": "ABCDEF019182FAEB4F6E5776536D5372",
+      "CID": "ABCDEF019182FAEB52734144536D5372",
       "Category": "Audio Module Class",
       "Name": "Smart Ducking (Surround)",
-      "Vendor": "OnWave",
+      "Vendor": "RusAD",
       "Version": "@PROJECT_VERSION@",
       "SDKVersion": "VST 3.8.0",
       "Sub Categories": ["Fx", "Dynamics"],
@@ -37,10 +37,10 @@
       "Snapshots": []
     },
     {
-      "CID": "ABCDEF011234ABCD4F6E5776536D646B",
+      "CID": "ABCDEF011234ABCD52734144536D646B",
       "Category": "Component Controller Class",
       "Name": "Smart Ducking",
-      "Vendor": "OnWave",
+      "Vendor": "RusAD",
       "Version": "@PROJECT_VERSION@",
       "SDKVersion": "VST 3.8.0",
       "Sub Categories": ["Fx", "Dynamics"],

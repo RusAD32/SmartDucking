@@ -23,7 +23,7 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
 
 private:
-    struct OnWaveLookAndFeel;
+    struct RusADLookAndFeel;
     struct ParameterControl;
     struct EnvelopePanel;
     struct SpectrumPanel;
@@ -84,10 +84,10 @@ private:
                                  bool menuAvailable = false);
 
     SmartDuckingAudioProcessor& audioProcessor;
-    std::unique_ptr<OnWaveLookAndFeel> onWaveLookAndFeel;
+    std::unique_ptr<RusADLookAndFeel> rusadLookAndFeel;
     std::unique_ptr<juce::TooltipWindow> tooltipWindow;
     std::unique_ptr<SpectrumPanel> spectrumPanel;
-    juce::Image onWaveLogo;
+    juce::Image RusADLogo;
 
     juce::ComboBox presetChoice;
     std::array<juce::TextButton, 2> comparisonButtons {

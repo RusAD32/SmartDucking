@@ -22,7 +22,7 @@ const auto primarySoftColour = juce::Colour::fromRGB (168, 90, 255);
 const auto textColour = juce::Colour::fromRGB (255, 255, 255);
 const auto secondaryTextColour = juce::Colour::fromRGB (215, 199, 233);
 const auto mutedTextColour = juce::Colour::fromRGB (184, 166, 204);
-const auto voiceColour = juce::Colour::fromRGB (74, 222, 128);
+const auto voiceColour = juce::Colour::fromRGB (132, 226, 44);
 const auto wideReductionColour = juce::Colour::fromRGB (239, 68, 68);
 const auto maskColour = juce::Colour::fromRGB (251, 191, 36);
 const auto spectralReductionColour = maskColour;
@@ -255,9 +255,9 @@ const std::array<float, 25> defaultMatrixValues {
 };
 } // namespace
 
-struct SmartDuckingAudioProcessorEditor::OnWaveLookAndFeel final : juce::LookAndFeel_V4
+struct SmartDuckingAudioProcessorEditor::RusADLookAndFeel final : juce::LookAndFeel_V4
 {
-    OnWaveLookAndFeel()
+    RusADLookAndFeel()
     {
         setColour (juce::PopupMenu::backgroundColourId, backgroundSoftColour);
         setColour (juce::PopupMenu::textColourId, textColour);
@@ -1953,17 +1953,17 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
     SmartDuckingAudioProcessor& newProcessor)
     : juce::AudioProcessorEditor (newProcessor),
       audioProcessor (newProcessor),
-      onWaveLookAndFeel (std::make_unique<OnWaveLookAndFeel>()),
+      rusadLookAndFeel (std::make_unique<RusADLookAndFeel>()),
       spectrumPanel (std::make_unique<SpectrumPanel> (newProcessor))
 {
     using namespace smart_ducking::parameter_ids;
 
     globalBypassPanel = std::make_unique<GlobalBypassPanel>();
     globalBypassPanel->setComponentID ("globalBypassPanel");
-    onWaveLogo = juce::ImageCache::getFromMemory (BinaryData::OnWaveLogo_png,
-                                                  BinaryData::OnWaveLogo_pngSize);
+    RusADLogo = juce::ImageCache::getFromMemory (BinaryData::RusADLogo_png,
+                                                 BinaryData::RusADLogo_pngSize);
     setOpaque (true);
-    setLookAndFeel (onWaveLookAndFeel.get());
+    setLookAndFeel (rusadLookAndFeel.get());
     tooltipWindow = std::make_unique<juce::TooltipWindow> (this, 850);
     setResizable (true, true);
     setResizeLimits (audioProcessor.isSurroundVariant() ? 960 : 820,
@@ -2585,23 +2585,23 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
     graphics.setColour (borderColour);
     graphics.drawHorizontalLine (headerHeight - 1, 0.0f, static_cast<float> (getWidth()));
 
-    const auto onWaveLogoBounds = juce::Rectangle<float> (18.0f, 12.0f, 62.0f, 40.0f);
+    const auto RusADLogoBounds = juce::Rectangle<float> (18.0f, 15.0f, 40.0f, 40.0f);
 
-    if (onWaveLogo.isValid())
+    if (RusADLogo.isValid())
     {
         graphics.saveState();
         graphics.setOpacity (1.0f);
         graphics.setColour (textColour);
-        graphics.drawImage (onWaveLogo,
-                            onWaveLogoBounds,
+        graphics.drawImage (RusADLogo,
+                            RusADLogoBounds,
                             juce::RectanglePlacement::centred,
-                            true);
+                            false);
         graphics.restoreState();
     }
 
     graphics.setColour (textColour);
     graphics.setFont (juce::FontOptions { 21.0f, juce::Font::bold });
-    constexpr int titleX = 88;
+    constexpr int titleX = 66;
     constexpr int titleWidth = 158;
     graphics.drawFittedText ("SMART DUCKING",
                              juce::Rectangle<int> (titleX, 17, titleWidth, 36),
@@ -2884,7 +2884,7 @@ void SmartDuckingAudioProcessorEditor::showChannelOrderMenu (
         smart_ducking::surroundChannelOrderCount - 1,
         juce::roundToInt (parameter->convertFrom0to1 (parameter->getValue())));
     juce::PopupMenu menu;
-    menu.setLookAndFeel (onWaveLookAndFeel.get());
+    menu.setLookAndFeel (rusadLookAndFeel.get());
     menu.addSectionHeader (title);
 
     for (int order = 0; order < smart_ducking::surroundChannelOrderCount; ++order)

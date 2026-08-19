@@ -49,10 +49,10 @@ endif()
 
 juce_add_plugin(SmartDucking
     VERSION 1.0.0
-    COMPANY_NAME "OnWave"
-    COMPANY_WEBSITE "https://onwavedub.org"
-    BUNDLE_ID "org.onwavedub.SmartDucking"
-    PLUGIN_MANUFACTURER_CODE OnWv
+    COMPANY_NAME "RusAD"
+    COMPANY_WEBSITE "https://github.com/RusAD32"
+    BUNDLE_ID "org.rusad.SmartDucking"
+    PLUGIN_MANUFACTURER_CODE RsAD
     PLUGIN_CODE Smdk
     FORMATS VST3 Standalone
     PRODUCT_NAME "Smart Ducking"
@@ -70,7 +70,7 @@ juce_add_plugin(SmartDucking
 juce_add_binary_data(SmartDuckingResources
     NAMESPACE BinaryData
     SOURCES
-        Resources/OnWaveLogo.png
+        Resources/RusADLogo.png
 )
 
 target_link_libraries(SmartDucking

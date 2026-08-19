@@ -1,6 +1,6 @@
 # Smart Ducking
 
-Smart Ducking is an OnWave VST3 for voice-aware spatial and spectral ducking in voice-over mixing.
+Smart Ducking is a RusAD VST3 for voice-aware spatial and spectral ducking in voice-over mixing.
 
 Current status: **`1.0.0-rc.3` release candidate**, not the final `1.0.0` release.
 
@@ -105,16 +105,16 @@ Each artifact contains the ready-to-install `Smart Ducking.vst3` bundle for that
 
 The header selector loads the four factory starting points and user presets. Its final commands save the current settings under a user-provided name or delete the selected user preset. A `*` after the displayed name means that at least one saved processing or routing value has changed.
 
-User presets are global to the machine and are stored below the platform's user application-data directory in `OnWave/Smart Ducking/Presets`. Files are written atomically and corrupt files are ignored. Presets include processing, stage bypass, format, routing, and channel-order parameters. They intentionally exclude Global Bypass and the temporary Monitor Mode; recalling a preset preserves Global Bypass and returns monitoring to Normal. REAPER project state remains self-contained and has priority when an existing project is opened, even if the originating user-preset file is absent.
+User presets are global to the machine and are stored below the platform's user application-data directory in `RusAD/Smart Ducking/Presets`. Files are written atomically and corrupt files are ignored. Presets include processing, stage bypass, format, routing, and channel-order parameters. They intentionally exclude Global Bypass and the temporary Monitor Mode; recalling a preset preserves Global Bypass and returns monitoring to Normal. REAPER project state remains self-contained and has priority when an existing project is opened, even if the originating user-preset file is absent.
 
 ## Plugin identity
 
-- Company: OnWave
-- Website: https://onwavedub.org
-- Manufacturer code: `OnWv`
-- Stereo component code: `Smdk` (the original component identity is preserved)
+- Company: RusAD
+- Website: https://github.com/RusAD32
+- Manufacturer code: `RsAD`
+- Stereo component code: `Smdk`
 - Surround component code: `SmSr`
-- Bundle ID: `org.onwavedub.SmartDucking`
+- Bundle ID: `org.rusad.SmartDucking`
 - Formats: VST3 and Standalone
 
 ## Bus contract
@@ -198,4 +198,4 @@ Third-party attribution and the Apache-2.0 license for the adapted PCE factor ar
 
 ## Diagnostic logs
 
-Diagnostic builds write one tab-separated snapshot log per plugin instance to `%LOCALAPPDATA%\OnWave\SmartDucking`. A low-priority JUCE thread flushes the file every 1000 ms. The audio callback performs no file I/O or locking; it only updates atomics. Snapshots contain audio-block/sample counters, sidechain-active blocks, FFT mode and PDC, non-finite output count, current sidechain classifier mode, cumulative Voice FFT/PCE counters, and editor paint/timer counters. Sidechain mode values are `0 silence`, `1 left only`, `2 right only`, `3 dual mono`, `4 stereo`, and `5 surround`. This makes it possible to distinguish a stalled REAPER message thread from a stalled audio callback and to verify fast-path selection during profiling.
+Diagnostic builds write one tab-separated snapshot log per plugin instance to `%LOCALAPPDATA%\RusAD\SmartDucking`. A low-priority JUCE thread flushes the file every 1000 ms. The audio callback performs no file I/O or locking; it only updates atomics. Snapshots contain audio-block/sample counters, sidechain-active blocks, FFT mode and PDC, non-finite output count, current sidechain classifier mode, cumulative Voice FFT/PCE counters, and editor paint/timer counters. Sidechain mode values are `0 silence`, `1 left only`, `2 right only`, `3 dual mono`, `4 stereo`, and `5 surround`. This makes it possible to distinguish a stalled REAPER message thread from a stalled audio callback and to verify fast-path selection during profiling.

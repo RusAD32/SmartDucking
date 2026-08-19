@@ -445,7 +445,7 @@ int main (int argc, char** argv)
                     continue;
                 }
 
-                if (std::string (audioClasses[pluginIndex].vendor) != "OnWave"
+                if (std::string (audioClasses[pluginIndex].vendor) != "RusAD"
                     || std::string (audioClasses[pluginIndex].version) != "1.0.0"
                     || std::string (audioClasses[pluginIndex].subCategories)
                            .find ("Dynamics") == std::string::npos)

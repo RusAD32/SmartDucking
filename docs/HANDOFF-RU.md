@@ -293,7 +293,7 @@ Default matrix:
 | `Source/LcrDuckMatrix.h` | 5×5 defaults и maximum aggregation |
 | `Source/SidechainClassifier.h` | Silence/one-sided/dual-mono/stereo fast-path selection |
 | `Source/SidechainEnvelope.h` | dB mapping и Attack/Hold/Release envelope |
-| `Source/PluginEditor.cpp/.h` | OnWave LookAndFeel, Dynamics/Routing UI, spectrum, meters, routing matrix и offline-render overlay |
+| `Source/PluginEditor.cpp/.h` | RusAD LookAndFeel, Dynamics/Routing UI, spectrum, meters, routing matrix и offline-render overlay |
 | `Source/ParameterIds.h` | Стабильные host parameter IDs |
 | `Source/SmartDuckingVST3Client.cpp` | Composite VST3 factory с двумя plugin classes |
 | `Source/DiagnosticLogger.cpp/.h` | Lock-free counters и отдельный low-priority file writer в diagnostic builds |
@@ -347,7 +347,7 @@ Lookahead находится в Dynamics. Единая группа стадий
 - host program list содержит `Default`, `Gentle Dialogue`, `Voice Focus` и `Fast Announcer`.
 
 User preset хранит processing/routing/channel-order и stage-bypass параметры в
-`OnWave/Smart Ducking/Presets` внутри platform user application-data directory.
+`RusAD/Smart Ducking/Presets` внутри platform user application-data directory.
 Global Bypass и временный Monitor Mode не сохраняются: recall сохраняет текущий
 Global Bypass и возвращает monitor в Normal. Отсутствующие в старом preset
 параметры получают актуальные defaults. Project state самодостаточен и имеет
