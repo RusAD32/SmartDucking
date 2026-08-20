@@ -87,7 +87,7 @@ private:
     std::unique_ptr<RusADLookAndFeel> rusadLookAndFeel;
     std::unique_ptr<juce::TooltipWindow> tooltipWindow;
     std::unique_ptr<SpectrumPanel> spectrumPanel;
-    juce::Image RusADLogo;
+    std::unique_ptr<juce::Drawable> RusADLogo;
 
     juce::ComboBox presetChoice;
     std::array<juce::TextButton, 2> comparisonButtons {

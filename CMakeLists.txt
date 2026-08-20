@@ -70,7 +70,7 @@ juce_add_plugin(SmartDucking
 juce_add_binary_data(SmartDuckingResources
     NAMESPACE BinaryData
     SOURCES
-        Resources/RusADLogo.png
+        Resources/RusADLogo.svg
 )
 
 target_link_libraries(SmartDucking

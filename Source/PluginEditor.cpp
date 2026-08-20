@@ -1960,8 +1960,9 @@ SmartDuckingAudioProcessorEditor::SmartDuckingAudioProcessorEditor (
 
     globalBypassPanel = std::make_unique<GlobalBypassPanel>();
     globalBypassPanel->setComponentID ("globalBypassPanel");
-    RusADLogo = juce::ImageCache::getFromMemory (BinaryData::RusADLogo_png,
-                                                 BinaryData::RusADLogo_pngSize);
+    RusADLogo = juce::Drawable::createFromImageData (BinaryData::RusADLogo_svg,
+                                                     BinaryData::RusADLogo_svgSize);
+    jassert (RusADLogo != nullptr);
     setOpaque (true);
     setLookAndFeel (rusadLookAndFeel.get());
     tooltipWindow = std::make_unique<juce::TooltipWindow> (this, 850);
@@ -2587,15 +2588,14 @@ void SmartDuckingAudioProcessorEditor::paint (juce::Graphics& graphics)
 
     const auto RusADLogoBounds = juce::Rectangle<float> (18.0f, 15.0f, 40.0f, 40.0f);
 
-    if (RusADLogo.isValid())
+    if (RusADLogo != nullptr)
     {
         graphics.saveState();
         graphics.setOpacity (1.0f);
-        graphics.setColour (textColour);
-        graphics.drawImage (RusADLogo,
-                            RusADLogoBounds,
-                            juce::RectanglePlacement::centred,
-                            false);
+        RusADLogo->drawWithin (graphics,
+                              RusADLogoBounds,
+                              juce::RectanglePlacement::centred,
+                              1.0f);
         graphics.restoreState();
     }
 
