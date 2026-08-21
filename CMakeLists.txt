@@ -96,6 +96,7 @@ if (SMART_DUCKING_USE_PFFFT)
     # The maintained PFFFT fork requires this definition to select its NEON
     # implementation. It is harmless on x86, where the SSE path is selected.
     target_compile_definitions(PFFFT PRIVATE PFFFT_ENABLE_NEON=1)
+    set_target_properties(PFFFT PROPERTIES POSITION_INDEPENDENT_CODE ON)
     set(smart_ducking_fft_link_target PFFFT::PFFFT)
 endif()
 

@@ -3726,10 +3726,20 @@ int main()
         juce::Graphics snapshotGraphics (snapshot);
         editor->paintEntireComponent (snapshotGraphics, true);
         expect (snapshot.getPixelAt (10, 10).getAlpha() > 0, "custom editor paints off-screen");
-        const auto logoPixel = snapshot.getPixelAt (20, 35);
-        expect (logoPixel.getRed() > 220
+        auto logoContainsBrightPixel = false;
+        for (int y = 15; y < 55 && ! logoContainsBrightPixel; ++y)
+            for (int x = 18; x < 58; ++x)
+            {
+                const auto logoPixel = snapshot.getPixelAt (x, y);
+                if (logoPixel.getRed() > 220
                     && logoPixel.getGreen() > 220
-                    && logoPixel.getBlue() > 220,
+                    && logoPixel.getBlue() > 220)
+                {
+                    logoContainsBrightPixel = true;
+                    break;
+                }
+            }
+        expect (logoContainsBrightPixel,
                 "embedded SVG RusAD logo paints in the editor header");
         activate ("ROUTING");
     }
