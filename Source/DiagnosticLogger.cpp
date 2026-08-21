@@ -140,6 +140,28 @@ void DiagnosticLogger::recordSpectralStages (std::uint64_t newFrameInputTicks,
 #endif
 }
 
+void DiagnosticLogger::recordProcessorStages (
+    std::uint64_t newMainDelayTicks,
+    std::uint64_t newSidechainDelayTicks,
+    std::uint64_t newInputRoutingTicks,
+    std::uint64_t newCrossoverTicks,
+    std::uint64_t newOutputRoutingTicks) noexcept
+{
+#if SMART_DUCKING_ENABLE_DIAGNOSTICS
+    mainDelayTicks.fetch_add (newMainDelayTicks, std::memory_order_relaxed);
+    sidechainDelayTicks.fetch_add (newSidechainDelayTicks, std::memory_order_relaxed);
+    inputRoutingTicks.fetch_add (newInputRoutingTicks, std::memory_order_relaxed);
+    crossoverTicks.fetch_add (newCrossoverTicks, std::memory_order_relaxed);
+    outputRoutingTicks.fetch_add (newOutputRoutingTicks, std::memory_order_relaxed);
+#else
+    juce::ignoreUnused (newMainDelayTicks,
+                        newSidechainDelayTicks,
+                        newInputRoutingTicks,
+                        newCrossoverTicks,
+                        newOutputRoutingTicks);
+#endif
+}
+
 void DiagnosticLogger::recordResolutionChange (int newFftResolution,
                                                 int newLatencySamples) noexcept
 {
@@ -272,6 +294,8 @@ void DiagnosticLogger::run()
                       "\teditor_open\tpaint_count\ttimer_count"
                       "\thi_res_ticks_per_second\tvisualisation_enabled"
                       "\tprocess_block_ticks\tspectral_frame_count\tspectral_frame_ticks"
+                      "\tmain_delay_ticks\tsidechain_delay_ticks"
+                      "\tinput_routing_ticks\tcrossover_ticks\toutput_routing_ticks"
                       "\tframe_input_ticks\tclassification_ticks"
                       "\tmain_analysis_ticks\tsidechain_analysis_ticks"
                       "\tcontrol_ticks\tmask_ticks\twide_gain_ticks"
@@ -327,6 +351,11 @@ void DiagnosticLogger::writeSnapshot (juce::FileOutputStream& stream)
                     + "\t" + juce::String (processBlockTicks.load (std::memory_order_relaxed))
                     + "\t" + juce::String (spectralFrameCount.load (std::memory_order_relaxed))
                     + "\t" + juce::String (spectralFrameTicks.load (std::memory_order_relaxed))
+                    + "\t" + juce::String (mainDelayTicks.load (std::memory_order_relaxed))
+                    + "\t" + juce::String (sidechainDelayTicks.load (std::memory_order_relaxed))
+                    + "\t" + juce::String (inputRoutingTicks.load (std::memory_order_relaxed))
+                    + "\t" + juce::String (crossoverTicks.load (std::memory_order_relaxed))
+                    + "\t" + juce::String (outputRoutingTicks.load (std::memory_order_relaxed))
                     + "\t" + juce::String (frameInputTicks.load (std::memory_order_relaxed))
                     + "\t" + juce::String (classificationTicks.load (std::memory_order_relaxed))
                     + "\t" + juce::String (mainAnalysisTicks.load (std::memory_order_relaxed))

@@ -13,6 +13,8 @@
       "binaryDir": "${sourceDir}/build/windows-vs2026",
       "architecture": "x64",
       "cacheVariables": {
+        "SMART_DUCKING_USE_PFFFT": "ON",
+        "SMART_DUCKING_USE_XSIMD": "ON",
         "SMART_DUCKING_BUILD_TESTS": "ON"
       }
     },
@@ -26,6 +28,8 @@
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "SMART_DUCKING_USE_PFFFT": "ON",
+        "SMART_DUCKING_USE_XSIMD": "ON",
         "SMART_DUCKING_BUILD_TESTS": "ON"
       },
       "environment": {
@@ -42,6 +46,8 @@
         "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "SMART_DUCKING_USE_PFFFT": "ON",
+        "SMART_DUCKING_USE_XSIMD": "ON",
         "SMART_DUCKING_BUILD_TESTS": "ON"
       },
       "environment": {
@@ -56,6 +62,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "SMART_DUCKING_USE_PFFFT": "ON",
+        "SMART_DUCKING_USE_XSIMD": "ON",
         "SMART_DUCKING_BUILD_TESTS": "ON"
       }
     }

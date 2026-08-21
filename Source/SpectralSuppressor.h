@@ -15,9 +15,11 @@
 #include "CrossoverMagnitude.h"
 #include "LcrDuckMatrix.h"
 #include "PceHistory.h"
+#include "RealFft.h"
 #include "SidechainClassifier.h"
 #include "SidechainEnvelope.h"
 #include "SpectralFrameSmoothers.h"
+#include "SpectralVectorMath.h"
 
 namespace smart_ducking
 {
@@ -91,7 +93,7 @@ public:
         for (int mode = 0; mode < numModes; ++mode)
         {
             const auto order = baseOrder + mode;
-            ffts[static_cast<size_t> (mode)] = std::make_unique<juce::dsp::FFT> (order);
+            ffts[static_cast<size_t> (mode)] = std::make_unique<RealFft> (order);
             const auto size = 1 << order;
             auto& window = windows[static_cast<size_t> (mode)];
             window.resize (static_cast<size_t> (size));
@@ -125,7 +127,11 @@ public:
             magnitudeDb[static_cast<size_t> (channel)].resize (static_cast<size_t> (maximumBins));
             processedMagnitudeDb[static_cast<size_t> (channel)].resize (
                 static_cast<size_t> (maximumBins));
+            magnitudePower[static_cast<size_t> (channel)].resize (
+                static_cast<size_t> (maximumBins));
             rawReductionDb[static_cast<size_t> (channel)].resize (static_cast<size_t> (maximumBins));
+            smoothedMaskTargetDb[static_cast<size_t> (channel)].resize (
+                static_cast<size_t> (maximumBins));
             temporalReductionDb[static_cast<size_t> (channel)].resize (static_cast<size_t> (maximumBins));
             appliedSpectralReductionDb[static_cast<size_t> (channel)].resize (
                 static_cast<size_t> (maximumBins));
@@ -144,7 +150,7 @@ public:
         synthesisWindow.resize (static_cast<size_t> (maximumSize));
         dryWindowGain.resize (static_cast<size_t> (maximumSize));
 
-        lowBandDisplayFft = std::make_unique<juce::dsp::FFT> (lowBandDisplayFftOrder);
+        lowBandDisplayFft = std::make_unique<RealFft> (lowBandDisplayFftOrder);
         lowBandDisplayWindow.resize (lowBandDisplayFftSize);
         juce::dsp::WindowingFunction<float>::fillWindowingTables (
             lowBandDisplayWindow.data(),
@@ -208,6 +214,12 @@ public:
             std::fill (channel.begin(), channel.end(), 0.0f);
 
         for (auto& channel : temporalReductionDb)
+            std::fill (channel.begin(), channel.end(), 0.0f);
+
+        for (auto& channel : magnitudePower)
+            std::fill (channel.begin(), channel.end(), 0.0f);
+
+        for (auto& channel : smoothedMaskTargetDb)
             std::fill (channel.begin(), channel.end(), 0.0f);
 
         for (auto& channel : appliedSpectralReductionDb)
@@ -615,6 +627,14 @@ public:
     {
         return lastSidechainMode;
     }
+
+#if SMART_DUCKING_ENABLE_TEST_HOOKS
+    void setVectorMathBackendForTests (
+        spectral_vector_math::Backend backend) noexcept
+    {
+        vectorMathBackend = backend;
+    }
+#endif
 
     [[nodiscard]] bool isHeavyPathActive() const noexcept
     {
@@ -1458,7 +1478,7 @@ private:
                                                window.data(),
                                                fftSize);
 
-        activeFft->performRealOnlyForwardTransform (transform.data(), true);
+        activeFft->forward (transform.data());
     }
 
     void performSidechainForwardFft (size_t channel,
@@ -1470,7 +1490,7 @@ private:
                                                window.data(),
                                                fftSize);
 
-        activeFft->performRealOnlyForwardTransform (transform.data(), true);
+        activeFft->forward (transform.data());
         ++processedSidechainFftCount;
     }
 
@@ -1548,35 +1568,19 @@ private:
         const auto widebandGain = juce::Decibels::decibelsToGain (
             -juce::jmax (0.0f, widebandReductionDb));
         auto& spectralReduction = appliedSpectralReductionDb[static_cast<size_t> (channel)];
-        auto minimumEffectiveSpectralGain = 1.0f;
-
-        for (int bin = 0; bin < bins; ++bin)
-        {
-            const auto crossoverHighWeight = cachedEconomyHighWeight[static_cast<size_t> (bin)];
-            const auto highWeight = 1.0f - crossoverStageMix
-                                  + crossoverStageMix * crossoverHighWeight;
-            const auto lowWeight = 1.0f - highWeight;
-            const auto spectralGain = juce::Decibels::decibelsToGain (
-                -juce::jmax (0.0f, spectralReduction[static_cast<size_t> (bin)]));
-            const auto normalGain = lowWeight
-                                  + highWeight * spectralGain * widebandGain;
-            const auto offset = static_cast<size_t> (2 * bin);
-            transform[offset] *= normalGain;
-            transform[offset + 1] *= normalGain;
-
-            const auto effectiveSpectralGain = lowWeight + highWeight * spectralGain;
-            minimumEffectiveSpectralGain = juce::jmin (minimumEffectiveSpectralGain,
-                                                       effectiveSpectralGain);
-
-            if (updateDisplayMask)
-            {
-                // Keep the amber UI mask frequency-selective: the red
-                // wideband reduction remains represented by the W meter.
-                const auto effectiveSpectralReduction = -juce::Decibels::gainToDecibels (
-                    juce::jmax (epsilon, effectiveSpectralGain), -160.0f);
-                spectralReduction[static_cast<size_t> (bin)] = effectiveSpectralReduction;
-            }
-        }
+        const auto minimumEffectiveSpectralGain =
+            spectral_vector_math::applyNormalCrossoverGain (
+                cachedEconomyHighWeight.data(),
+                spectralReduction.data(),
+                transform.data(),
+                bins,
+                {
+                    widebandGain,
+                    crossoverStageMix,
+                    epsilon,
+                    updateDisplayMask
+                },
+                vectorMathBackend);
 
         lastMaximumReductionDb[static_cast<size_t> (channel)] =
             -juce::Decibels::gainToDecibels (
@@ -1635,7 +1639,7 @@ private:
     void inverseAndAccumulate (std::vector<float>& transform,
                                std::vector<float>& overlap) noexcept
     {
-        activeFft->performRealOnlyInverseTransform (transform.data());
+        activeFft->inverse (transform.data());
         juce::FloatVectorOperations::multiply (transform.data(),
                                                synthesisWindow.data(),
                                                fftSize);
@@ -1747,7 +1751,9 @@ private:
     {
         const auto bins = fftSize / 2 + 1;
         auto& magnitudes = magnitudeDb[static_cast<size_t> (channel)];
+        auto& powers = magnitudePower[static_cast<size_t> (channel)];
         auto& rawReduction = rawReductionDb[static_cast<size_t> (channel)];
+        auto& targets = smoothedMaskTargetDb[static_cast<size_t> (channel)];
         auto& temporal = temporalReductionDb[static_cast<size_t> (channel)];
         auto& applied = appliedSpectralReductionDb[static_cast<size_t> (channel)];
         const auto amount = juce::jmax (0.0f, parameters.amountDb);
@@ -1797,8 +1803,7 @@ private:
 
                 if (std::isfinite (power))
                 {
-                    magnitudes[static_cast<size_t> (bin)] =
-                        juce::Decibels::gainToDecibels (std::sqrt (power), -160.0f);
+                    powers[static_cast<size_t> (bin)] = power;
 
                     if (bin >= firstAverageBin && bin <= lastAverageBin)
                     {
@@ -1808,9 +1813,16 @@ private:
                 }
                 else
                 {
-                    magnitudes[static_cast<size_t> (bin)] = -160.0f;
+                    powers[static_cast<size_t> (bin)] = 0.0f;
                 }
             }
+
+            spectral_vector_math::powersToDecibels (
+                powers.data() + firstMagnitudeBin,
+                magnitudes.data() + firstMagnitudeBin,
+                lastMagnitudeBin - firstMagnitudeBin + 1,
+                -160.0f,
+                vectorMathBackend);
         }
 
         const auto globalMeanPower = globalPowerCount > 0
@@ -1839,9 +1851,6 @@ private:
             }
         }
 
-        const auto voiceAmount = juce::jlimit (0.0f, 1.0f, frameControl);
-        lastMaximumReductionDb[static_cast<size_t> (channel)] = 0.0f;
-
         for (int bin = 0; bin < bins; ++bin)
         {
             float target = 0.0f;
@@ -1863,33 +1872,25 @@ private:
                 target += rawReduction[static_cast<size_t> (bin + 1)];
                 target /= 3.0f;
             }
-
-            auto& smoothed = temporal[static_cast<size_t> (bin)];
-            if (initialiseMaskImmediately)
-            {
-                smoothed = target;
-            }
-            else
-            {
-                const auto coefficient = target > smoothed
-                    ? maskShapeAttackCoefficient
-                    : maskShapeReleaseCoefficient;
-                smoothed = coefficient * smoothed + (1.0f - coefficient) * target;
-            }
-
-            const auto appliedReductionDb = smoothed * voiceAmount * stageMix;
-            applied[static_cast<size_t> (bin)] = appliedReductionDb;
-            lastMaximumReductionDb[static_cast<size_t> (channel)] = juce::jmax (
-                lastMaximumReductionDb[static_cast<size_t> (channel)],
-                appliedReductionDb);
-            if (applyGainToTransform)
-            {
-                const auto combinedGain = juce::Decibels::decibelsToGain (
-                    -(appliedReductionDb + juce::jmax (0.0f, additionalReductionDb)));
-                transform[static_cast<size_t> (2 * bin)] *= combinedGain;
-                transform[static_cast<size_t> (2 * bin + 1)] *= combinedGain;
-            }
+            targets[static_cast<size_t> (bin)] = target;
         }
+
+        const auto voiceAmount = juce::jlimit (0.0f, 1.0f, frameControl);
+        lastMaximumReductionDb[static_cast<size_t> (channel)] =
+            spectral_vector_math::smoothMaskAndApplyGain (
+                targets.data(),
+                temporal.data(),
+                applied.data(),
+                applyGainToTransform ? transform.data() : nullptr,
+                bins,
+                {
+                    maskShapeAttackCoefficient,
+                    maskShapeReleaseCoefficient,
+                    voiceAmount * stageMix,
+                    juce::jmax (0.0f, additionalReductionDb),
+                    initialiseMaskImmediately
+                },
+                vectorMathBackend);
     }
 
     void calculateLcrSpectra (std::vector<float>& leftTransform,
@@ -2028,7 +2029,7 @@ private:
             std::fill (transform.begin() + lowBandDisplayFftSize,
                        transform.end(),
                        0.0f);
-            lowBandDisplayFft->performRealOnlyForwardTransform (transform.data(), true);
+            lowBandDisplayFft->forward (transform.data());
 
             auto& magnitudes = lowBandDisplayMagnitudeDb[static_cast<size_t> (channel)];
             const auto bins = lowBandDisplayFftSize / 2 + 1;
@@ -2289,8 +2290,10 @@ private:
     int hopSize = 512;
     int hopPosition = 0;
     Parameters parameters;
-    juce::dsp::FFT* activeFft = nullptr;
-    std::array<std::unique_ptr<juce::dsp::FFT>, numModes> ffts;
+    spectral_vector_math::Backend vectorMathBackend =
+        spectral_vector_math::Backend::selected;
+    RealFft* activeFft = nullptr;
+    std::array<std::unique_ptr<RealFft>, numModes> ffts;
     std::array<std::vector<float>, numModes> windows;
     std::array<std::vector<float>, lcrChannels> analysisInput;
     std::array<std::vector<float>, lcrChannels> mainHistory;
@@ -2302,7 +2305,9 @@ private:
     std::array<std::vector<float>, lcrChannels> overlapBuffer;
     std::array<std::vector<float>, lcrChannels> magnitudeDb;
     std::array<std::vector<float>, lcrChannels> processedMagnitudeDb;
+    std::array<std::vector<float>, lcrChannels> magnitudePower;
     std::array<std::vector<float>, lcrChannels> rawReductionDb;
+    std::array<std::vector<float>, lcrChannels> smoothedMaskTargetDb;
     std::array<std::vector<float>, lcrChannels> temporalReductionDb;
     std::array<std::vector<float>, lcrChannels> appliedSpectralReductionDb;
     std::array<bool, lcrChannels> spectralMaskStateIsClear {};
@@ -2312,7 +2317,7 @@ private:
     std::vector<float> cachedEconomyHighWeight;
     std::vector<float> synthesisWindow;
     std::vector<float> dryWindowGain;
-    std::unique_ptr<juce::dsp::FFT> lowBandDisplayFft;
+    std::unique_ptr<RealFft> lowBandDisplayFft;
     std::vector<float> lowBandDisplayWindow;
     std::array<std::vector<float>, lcrChannels> lowBandDisplayRing;
     std::array<std::vector<float>, lcrChannels> lowBandDisplayFftData;

@@ -16,17 +16,23 @@ The current candidate keeps fixed Main/Lookahead/PDC histories in preallocated p
 
 - CMake 3.22 or newer
 - JUCE 8.0.12 (local checkout, installed CMake package, or automatic FetchContent download)
+- PFFFT (pinned automatic FetchContent download, or a local checkout via `PFFFT_PATH`)
+- xsimd 14.3.0 (pinned automatic FetchContent download, or a local checkout via `XSIMD_PATH`)
 - Windows: Visual Studio with Desktop development with C++
 - macOS: Apple Command Line Tools, CMake, and Ninja
 - Linux: GCC or Clang, Ninja, and the JUCE ALSA/Jack, FreeType, Fontconfig, LADSPA, and X11 development packages
 
 The tracked `CMakePresets.json` contains the common Windows, macOS, and Linux presets. The ignored `CMakeUserPresets.json` is only for machine-local overrides such as an absolute JUCE path. Without an override, CMake uses `JUCE_PATH`, the workspace-adjacent `../../JUCE-8.0.12`, an installed JUCE package, or downloads the pinned `8.0.12` tag.
 
+PFFFT is the default real-time FFT backend. Set `PFFFT_PATH` to reuse a local source tree, or configure with `-DSMART_DUCKING_USE_PFFFT=OFF` to build the JUCE FFT reference backend for A/B validation. Both backends expose the same positive-frequency layout to the spectral processor; the processor test compares their spectra and inverse output for every supported FFT size.
+
+xsimd is the default vector-math backend for magnitude conversion, spectral mask smoothing/gain, and the NORMAL crossover/gain pass. It uses NEON on arm64, baseline SSE on x86, and a separately compiled AVX2 kernel selected at runtime when supported. Set `XSIMD_PATH` to reuse a local source tree. `-DSMART_DUCKING_USE_XSIMD=OFF` keeps the same kernels and tests available but selects the scalar reference path for whole-plugin A/B measurements.
+
 ## Repository contents
 
 Git tracks the portable `Source`, `Resources`, `Tests`, `docs`, CMake files, and documentation. Generated JUCE code, build trees, IDE state, machine-local CMake presets, plugin bundles, debug symbols, logs, and source archives are ignored. This keeps the same checkout usable on Windows, Apple Silicon, and Intel Mac without committing platform output.
 
-The macOS presets clear `LDFLAGS` for the CMake process so a globally selected `lld` does not replace Apple's linker. `JUCE_PATH` is the only optional environment input and remains the public path to the JUCE checkout, including on Windows. `JUCE_MODULES_DIR` is an internal cache variable created by JUCE after it is loaded; the factory test uses it only to locate JUCE's bundled VST3 SDK. It does not replace or change the meaning of `JUCE_PATH`. `CMAKE_BUILD_TYPE`, `CMAKE_OSX_ARCHITECTURES`, `CMAKE_OSX_DEPLOYMENT_TARGET`, `CMAKE_EXPORT_COMPILE_COMMANDS`, and `SMART_DUCKING_BUILD_TESTS` are CMake cache variables rather than shell environment changes.
+The macOS presets clear `LDFLAGS` for the CMake process so a globally selected `lld` does not replace Apple's linker. `JUCE_PATH` is the only optional environment input and remains the public path to the JUCE checkout, including on Windows. `PFFFT_PATH` and `XSIMD_PATH` are optional CMake cache paths, not environment requirements. `JUCE_MODULES_DIR` is an internal cache variable created by JUCE after it is loaded; the factory test uses it only to locate JUCE's bundled VST3 SDK. It does not replace or change the meaning of `JUCE_PATH`. `CMAKE_BUILD_TYPE`, `CMAKE_OSX_ARCHITECTURES`, `CMAKE_OSX_DEPLOYMENT_TARGET`, `CMAKE_EXPORT_COMPILE_COMMANDS`, `SMART_DUCKING_USE_PFFFT`, `SMART_DUCKING_USE_XSIMD`, `SMART_DUCKING_ENABLE_DIAGNOSTICS`, `SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH`, and `SMART_DUCKING_BUILD_TESTS` are CMake cache variables rather than shell environment changes.
 
 ## Configure and build
 
@@ -76,6 +82,14 @@ This runs the finished bundle at strictness 5. Normal configure, build, and test
 cmake --build --preset macos-release-universal --target SmartDuckingBenchmark
 ./build-macos/release-universal/SmartDuckingBenchmark_artefacts/Release/SmartDuckingBenchmark
 ```
+
+The benchmark prints both `FFT backend` and `Vector math backend` before the matrix so PFFFT/JUCE and xsimd/scalar reference runs cannot be confused.
+
+For a long single-case sampling run, use `--profile <stereo|surround> <quality|normal> <0|1|2> <blocks> [visualisation-on]`; the numeric resolution is the zero-based index for x1/x2/x4. The result includes `steady-blocks`, which confirms whether the active steady-state block path was selected. The time-domain crossover can be isolated with `--crossover-profile <stereo|surround> <0|1|2|3|4> <blocks>`, where the numeric value selects 24/36/48/60/72 dB/oct.
+
+Detailed audio-thread stage timers can be enabled in a separate build with `-DSMART_DUCKING_ENABLE_DIAGNOSTICS=ON`. In addition to the STFT stages, its log includes Main delay, sidechain delay, input routing, external crossover, and output routing ticks. The steady active path is deliberately disabled while these timers are enabled so the log describes the complete generic fallback. Production builds keep all timers compiled out by default.
+
+`SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH` defaults to `ON`. Setting it to `OFF` is intended only for reproducible generic-vs-block performance comparisons and leaves the transition/fallback DSP available as the sole path.
 
 The local 1.0 acceptance record, pluginval result, and benchmark summary are in [`docs/validation-1.0-ru.md`](docs/validation-1.0-ru.md).
 

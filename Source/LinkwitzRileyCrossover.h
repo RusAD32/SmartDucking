@@ -5,6 +5,7 @@
 #include <utility>
 
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <juce_dsp/juce_dsp.h>
 
 namespace smart_ducking
 {
@@ -147,6 +148,92 @@ public:
         };
     }
 
+    [[nodiscard]] bool canProcessSteadyBlock() const noexcept
+    {
+        return ! slopeTransitionActive && ! smoothedCutoff.isSmoothing();
+    }
+
+    void processSteadyBlock (const std::array<const float*, 5>& input,
+                             const std::array<float*, 5>& lowOutput,
+                             const std::array<float*, 5>& highOutput,
+                             int numSamples,
+                             bool stereo) noexcept
+    {
+        if (numSamples <= 0)
+            return;
+
+        jassert (canProcessSteadyBlock());
+
+        if constexpr (juce::dsp::SIMDRegister<double>::size() >= 2)
+        {
+            const auto processPair = [&] (int firstChannel, int secondChannel)
+            {
+                const auto firstIndex = static_cast<size_t> (firstChannel);
+                const auto secondIndex = static_cast<size_t> (secondChannel);
+                activeBank().processSteadyPairBlock (
+                    firstChannel,
+                    secondChannel,
+                    input[firstIndex],
+                    input[secondIndex],
+                    lowOutput[firstIndex],
+                    lowOutput[secondIndex],
+                    highOutput[firstIndex],
+                    highOutput[secondIndex],
+                    numSamples);
+            };
+
+            processPair (0, stereo ? 2 : 1);
+
+            if (! stereo)
+            {
+                processPair (2, 3);
+                activeBank().processSteadyBlock (4,
+                                                 input[4],
+                                                 lowOutput[4],
+                                                 highOutput[4],
+                                                 numSamples);
+            }
+
+            coefficientUpdateCountdown = juce::jmax (
+                0, coefficientUpdateCountdown - numSamples);
+            return;
+        }
+
+        const auto processChannel = [&] (int channel)
+        {
+            const auto index = static_cast<size_t> (channel);
+            jassert (input[index] != nullptr);
+            jassert (lowOutput[index] != nullptr);
+            jassert (highOutput[index] != nullptr);
+            activeBank().processSteadyBlock (channel,
+                                             input[index],
+                                             lowOutput[index],
+                                             highOutput[index],
+                                             numSamples);
+        };
+
+        processChannel (0);
+
+        if (stereo)
+        {
+            processChannel (2);
+        }
+        else
+        {
+            processChannel (1);
+            processChannel (2);
+            processChannel (3);
+            processChannel (4);
+        }
+
+        // beginSample() normally advances this countdown even while the
+        // cutoff is stationary. Preserve that timeline so later automation
+        // enters the generic path at exactly the same coefficient-update
+        // phase.
+        coefficientUpdateCountdown = juce::jmax (
+            0, coefficientUpdateCountdown - numSamples);
+    }
+
     [[nodiscard]] float getCurrentCutoffHz() const noexcept
     {
         return smoothedCutoff.getCurrentValue();
@@ -278,6 +365,212 @@ private:
             }
 
             return { low, highPolarity * high };
+        }
+
+        void processSteadyBlock (int channel,
+                                 const float* input,
+                                 float* lowOutput,
+                                 float* highOutput,
+                                 int numSamples) noexcept
+        {
+            switch (prototypeOrder)
+            {
+                case 2: processFixedOrderBlock<2> (channel, input, lowOutput,
+                                                   highOutput, numSamples); break;
+                case 3: processFixedOrderBlock<3> (channel, input, lowOutput,
+                                                   highOutput, numSamples); break;
+                case 4: processFixedOrderBlock<4> (channel, input, lowOutput,
+                                                   highOutput, numSamples); break;
+                case 5: processFixedOrderBlock<5> (channel, input, lowOutput,
+                                                   highOutput, numSamples); break;
+                case 6: processFixedOrderBlock<6> (channel, input, lowOutput,
+                                                   highOutput, numSamples); break;
+                default: jassertfalse; break;
+            }
+        }
+
+        void processSteadyPairBlock (int firstChannel,
+                                     int secondChannel,
+                                     const float* firstInput,
+                                     const float* secondInput,
+                                     float* firstLowOutput,
+                                     float* secondLowOutput,
+                                     float* firstHighOutput,
+                                     float* secondHighOutput,
+                                     int numSamples) noexcept
+        {
+            switch (prototypeOrder)
+            {
+                case 2: processFixedOrderPairBlock<2> (
+                    firstChannel, secondChannel, firstInput, secondInput,
+                    firstLowOutput, secondLowOutput, firstHighOutput,
+                    secondHighOutput, numSamples); break;
+                case 3: processFixedOrderPairBlock<3> (
+                    firstChannel, secondChannel, firstInput, secondInput,
+                    firstLowOutput, secondLowOutput, firstHighOutput,
+                    secondHighOutput, numSamples); break;
+                case 4: processFixedOrderPairBlock<4> (
+                    firstChannel, secondChannel, firstInput, secondInput,
+                    firstLowOutput, secondLowOutput, firstHighOutput,
+                    secondHighOutput, numSamples); break;
+                case 5: processFixedOrderPairBlock<5> (
+                    firstChannel, secondChannel, firstInput, secondInput,
+                    firstLowOutput, secondLowOutput, firstHighOutput,
+                    secondHighOutput, numSamples); break;
+                case 6: processFixedOrderPairBlock<6> (
+                    firstChannel, secondChannel, firstInput, secondInput,
+                    firstLowOutput, secondLowOutput, firstHighOutput,
+                    secondHighOutput, numSamples); break;
+                default: jassertfalse; break;
+            }
+        }
+
+        template <int prototype>
+        void processFixedOrderBlock (int channel,
+                                     const float* input,
+                                     float* lowOutput,
+                                     float* highOutput,
+                                     int numSamples) noexcept
+        {
+            constexpr auto firstOrderSections = (prototype & 1) != 0 ? 2 : 0;
+            constexpr auto totalSections = firstOrderSections
+                                         + 2 * (prototype / 2);
+            const auto channelIndex = static_cast<size_t> (channel);
+
+            for (int sample = 0; sample < numSamples; ++sample)
+            {
+                auto low = input[sample];
+                auto high = input[sample];
+
+                for (int section = 0; section < firstOrderSections; ++section)
+                {
+                    const auto index = static_cast<size_t> (section);
+                    low = lowStates[channelIndex][index].processFirstOrder (
+                        low, lowCoefficients[index]);
+                    high = highStates[channelIndex][index].processFirstOrder (
+                        high, highCoefficients[index]);
+                }
+
+                for (int section = firstOrderSections;
+                     section < totalSections;
+                     ++section)
+                {
+                    const auto index = static_cast<size_t> (section);
+                    low = lowStates[channelIndex][index].processSecondOrder (
+                        low, lowCoefficients[index]);
+                    high = highStates[channelIndex][index].processSecondOrder (
+                        high, highCoefficients[index]);
+                }
+
+                lowOutput[sample] = low;
+                highOutput[sample] = highPolarity * high;
+            }
+        }
+
+        template <int prototype>
+        void processFixedOrderPairBlock (int firstChannel,
+                                         int secondChannel,
+                                         const float* firstInput,
+                                         const float* secondInput,
+                                         float* firstLowOutput,
+                                         float* secondLowOutput,
+                                         float* firstHighOutput,
+                                         float* secondHighOutput,
+                                         int numSamples) noexcept
+        {
+            using Vector = juce::dsp::SIMDRegister<double>;
+            struct PackedState
+            {
+                Vector z1;
+                Vector z2;
+            };
+
+            constexpr auto firstOrderSections = (prototype & 1) != 0 ? 2 : 0;
+            constexpr auto totalSections = firstOrderSections
+                                         + 2 * (prototype / 2);
+            std::array<PackedState, bankMaxSections> packedLowStates;
+            std::array<PackedState, bankMaxSections> packedHighStates;
+            const auto firstIndex = static_cast<size_t> (firstChannel);
+            const auto secondIndex = static_cast<size_t> (secondChannel);
+
+            for (int section = 0; section < totalSections; ++section)
+            {
+                const auto index = static_cast<size_t> (section);
+                packedLowStates[index].z1.set (0, lowStates[firstIndex][index].z1);
+                packedLowStates[index].z1.set (1, lowStates[secondIndex][index].z1);
+                packedLowStates[index].z2.set (0, lowStates[firstIndex][index].z2);
+                packedLowStates[index].z2.set (1, lowStates[secondIndex][index].z2);
+                packedHighStates[index].z1.set (0, highStates[firstIndex][index].z1);
+                packedHighStates[index].z1.set (1, highStates[secondIndex][index].z1);
+                packedHighStates[index].z2.set (0, highStates[firstIndex][index].z2);
+                packedHighStates[index].z2.set (1, highStates[secondIndex][index].z2);
+            }
+
+            for (int sample = 0; sample < numSamples; ++sample)
+            {
+                Vector low;
+                low.set (0, static_cast<double> (firstInput[sample]));
+                low.set (1, static_cast<double> (secondInput[sample]));
+                auto high = low;
+
+                for (int section = 0; section < firstOrderSections; ++section)
+                {
+                    const auto index = static_cast<size_t> (section);
+                    const auto lowOutput = low * lowCoefficients[index].b0
+                                         + packedLowStates[index].z1;
+                    packedLowStates[index].z1 = low * lowCoefficients[index].b1
+                                              - lowOutput * lowCoefficients[index].a1;
+                    low = lowOutput;
+                    const auto highOutput = high * highCoefficients[index].b0
+                                          + packedHighStates[index].z1;
+                    packedHighStates[index].z1 = high * highCoefficients[index].b1
+                                               - highOutput * highCoefficients[index].a1;
+                    high = highOutput;
+                }
+
+                for (int section = firstOrderSections;
+                     section < totalSections;
+                     ++section)
+                {
+                    const auto index = static_cast<size_t> (section);
+                    const auto lowOutput = low * lowCoefficients[index].b0
+                                         + packedLowStates[index].z1;
+                    packedLowStates[index].z1 = low * lowCoefficients[index].b1
+                                              - lowOutput * lowCoefficients[index].a1
+                                              + packedLowStates[index].z2;
+                    packedLowStates[index].z2 = low * lowCoefficients[index].b2
+                                              - lowOutput * lowCoefficients[index].a2;
+                    low = lowOutput;
+                    const auto highOutput = high * highCoefficients[index].b0
+                                          + packedHighStates[index].z1;
+                    packedHighStates[index].z1 = high * highCoefficients[index].b1
+                                               - highOutput * highCoefficients[index].a1
+                                               + packedHighStates[index].z2;
+                    packedHighStates[index].z2 = high * highCoefficients[index].b2
+                                               - highOutput * highCoefficients[index].a2;
+                    high = highOutput;
+                }
+
+                firstLowOutput[sample] = static_cast<float> (low.get (0));
+                secondLowOutput[sample] = static_cast<float> (low.get (1));
+                firstHighOutput[sample] = highPolarity
+                                        * static_cast<float> (high.get (0));
+                secondHighOutput[sample] = highPolarity
+                                         * static_cast<float> (high.get (1));
+            }
+
+            for (int section = 0; section < totalSections; ++section)
+            {
+                const auto index = static_cast<size_t> (section);
+                lowStates[firstIndex][index].z1 = packedLowStates[index].z1.get (0);
+                lowStates[secondIndex][index].z1 = packedLowStates[index].z1.get (1);
+                lowStates[firstIndex][index].z2 = packedLowStates[index].z2.get (0);
+                lowStates[secondIndex][index].z2 = packedLowStates[index].z2.get (1);
+                highStates[firstIndex][index].z1 = packedHighStates[index].z1.get (0);
+                highStates[secondIndex][index].z1 = packedHighStates[index].z1.get (1);
+                highStates[firstIndex][index].z2 = packedHighStates[index].z2.get (0);
+                highStates[secondIndex][index].z2 = packedHighStates[index].z2.get (1);
+            }
         }
 
         void addSection (const std::pair<Coefficients, Coefficients>& coefficients) noexcept

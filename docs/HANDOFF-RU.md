@@ -180,6 +180,12 @@ Voice
 
 Voice inverse FFT не нужен, потому что sidechain не слышен.
 
+Все real FFT проходят через `Source/RealFft.h`. Default backend — pinned PFFFT
+с заранее выделенным aligned work buffer; `SMART_DUCKING_USE_PFFFT=OFF`
+оставляет JUCE backend для A/B-проверки. Wrapper сохраняет используемый DSP-кодом
+JUCE-compatible positive-frequency layout и нормализует inverse, поэтому смена
+backend не меняет PDC, FFT geometry или spectral-bin contract.
+
 ## 7. DSP-контракты, которые нельзя случайно изменить
 
 ### 7.1 Phantom Center Extraction
@@ -276,6 +282,10 @@ Default matrix:
 
 При тишине sidechain предвыделенная Main history возвращает точный latency-aligned dry signal напрямую: windowing, overlap-add, FFT, PCE, prominence, mask и inverse FFT спят. Для статичных Stereo/NORMAL и Surround/NORMAL с закрытой визуализацией history и fixed delays продвигаются блоками; после дренирования Voice delay/history также полностью пропускаются surround-remap и посэмпловая Voice orchestration. После исчезновения Voice тяжёлый путь остаётся активен до завершения hold, release и overlap-add tail; при пробуждении сохранённой истории достаточно, чтобы не потерять начало реплики.
 
+Активный стабильный path также имеет отдельную блочную orchestration: два Main latency tap читаются одним проходом, постоянный Voice delay обходится channel-major, channel order разрешается один раз на блок, а QUALITY Linkwitz–Riley и alignment delays используют slope-specialised block kernels. LR хранит double-precision states в SIMD-регистрах на всём блоке и обрабатывает каналы парами; пятый Surround-канал остаётся scalar. Sample loop остаётся только вокруг stateful spectral processor и output mix. Любая cutoff/slope/lookahead/routing automation, monitor/global-bypass transition, crossover warm-up, visualisation, diagnostics или oversized block возвращает прежний generic path. Scratch buffers выделяются в `prepareToPlay()`; processor null-tests сравнивают оба пути напрямую.
+
+Transcendental math в spectral path вынесена в отдельный xsimd backend. Он векторизует power-to-dB, temporal mask smoothing вместе с `dB -> gain`, а в NORMAL — crossover/spectral/wideband gain и display-mask conversion. На arm64 выбирается NEON; x86 имеет baseline SSE и отдельный AVX2 translation unit с runtime-проверкой CPU, поэтому весь binary не требует AVX2. Последний неполный SIMD-пакет каждого real FFT (`513/1025/2049/4097` bins) обрабатывается scalar. `SMART_DUCKING_USE_XSIMD=OFF` выбирает прежнюю scalar math как контрольную реализацию; тесты сравнивают scalar/vector kernels и полный spectral processor во всех resolution и обоих processing modes.
+
 При закрытом editor spectrum visualization выключается. Offline render отключает spectrum и meters независимо от состояния editor; открытый editor в это время показывает статический `RENDERING`. Overlay читает атомарное host/JUCE-состояние напрямую и снимается без ожидания следующего `processBlock`. Message-thread проверка уже существующего block counter определяет остановившийся audio callback примерно за 200 ms; stale meters и активная статусная лампа очищаются, а вновь открытый editor ждёт свежий блок. Не выполнять display FFT только ради meter или диагностической анимации.
 
 ## 8. Карта исходников
@@ -287,6 +297,9 @@ Default matrix:
 | `Source/PceHistory.h` | Предвыделенное persistent state для time-smoothed PCE coherence |
 | `Source/SpectralFrameSmoothers.h` | Переиспользуемое сглаживание mask shapes и пяти конечных matrix controls |
 | `Source/PowerOfTwoDelayBuffer.h` | Предвыделенная fixed integer-delay ring с mask wrap, двумя taps и block path |
+| `Source/RealFft.h` | Переключаемый PFFFT/JUCE real-only backend, layout adapter и предвыделенный work buffer |
+| `Source/SpectralVectorMath.cpp/.h` | Scalar/xsimd dispatch и стабильный интерфейс spectral vector-math kernels |
+| `Source/SpectralVectorMathKernels.h`, `Source/SpectralVectorMathAvx2.cpp` | Общие templated kernels, scalar tail и runtime-safe AVX2 specialization |
 | `Source/FactoryPresets.h` | Имена и parameter overrides четырёх заводских starting points |
 | `Source/UserPresetStore.cpp/.h` | Атомарное глобальное хранилище пользовательских пресетов и валидация файлов |
 | `Source/LinkwitzRileyCrossover.h` | LR4/LR6/LR8/LR10/LR12, сглаживание frequency и двухбанковый crossfade slope без allocation |
@@ -359,6 +372,8 @@ Global Bypass и возвращает monitor в Normal. Отсутствующ�
 
 - CMake 3.22+;
 - JUCE 8.0.12;
+- PFFFT из pinned FetchContent или локальный checkout через `PFFFT_PATH`;
+- xsimd 14.3.0 из pinned FetchContent или локальный checkout через `XSIMD_PATH`;
 - Windows: Visual Studio с workload `Desktop development with C++`;
 - macOS: Apple Command Line Tools и Ninja.
 
@@ -414,6 +429,14 @@ Global Bypass и возвращает monitor в Normal. Отсутствующ�
 Строка `generator` нужна при Visual Studio 2022. Для установленной Visual Studio 2026 её можно убрать и использовать generator родительского preset.
 
 Не задавать `JUCE_MODULES_DIR`: это внутренняя переменная JUCE. Публичная настройка проекта — `JUCE_PATH`.
+
+PFFFT включён по умолчанию. Для контрольной JUCE-сборки добавить
+`-DSMART_DUCKING_USE_PFFFT=OFF`; для offline/local source checkout использовать
+`-DPFFFT_PATH=/path/to/pffft`.
+
+xsimd включён по умолчанию. `-DSMART_DUCKING_USE_XSIMD=OFF` выбирает scalar
+reference path для compile-time A/B, а `-DXSIMD_PATH=/path/to/xsimd` разрешает
+использовать локальный checkout pinned версии.
 
 ### 11.3 Windows Debug
 

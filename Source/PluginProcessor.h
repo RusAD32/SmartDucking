@@ -16,6 +16,14 @@
 #include "SpectralSuppressor.h"
 #include "SurroundChannelOrder.h"
 
+#ifndef SMART_DUCKING_ENABLE_TEST_HOOKS
+#define SMART_DUCKING_ENABLE_TEST_HOOKS 0
+#endif
+
+#ifndef SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH
+#define SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH 1
+#endif
+
 namespace smart_ducking
 {
 enum class MonitorMode
@@ -190,6 +198,16 @@ public:
     {
         return staticSilentSidechainBlockCount;
     }
+    [[nodiscard]] std::uint64_t getSteadyActiveBlockCount() const noexcept
+    {
+        return steadyActiveBlockCount;
+    }
+#if SMART_DUCKING_ENABLE_TEST_HOOKS
+    void setSteadyActiveBlockPathEnabledForTesting (bool enabled) noexcept
+    {
+        steadyActiveBlockPathEnabledForTesting = enabled;
+    }
+#endif
     [[nodiscard]] std::uint64_t getProcessedFftFrameCount() const noexcept
     {
         return spectralLcrProcessor.getProcessedFftFrameCount();
@@ -495,6 +513,19 @@ private:
         const smart_ducking::ChannelOrderMix& outputOrder,
         float downmixMix,
         float dropLfeMix) noexcept;
+    void processSteadyActiveBlock (juce::AudioBuffer<float>& mainInput,
+                                   juce::AudioBuffer<float>& sidechain,
+                                   juce::AudioBuffer<float>& output,
+                                   bool sidechainEnabled,
+                                   bool voiceIsStereo,
+                                   bool useNormalMode,
+                                   float voiceSurroundMix,
+                                   float qualityCrossoverMix,
+                                   const smart_ducking::ChannelOrderMix& mainOrder,
+                                   const smart_ducking::ChannelOrderMix& voiceOrder,
+                                   const smart_ducking::ChannelOrderMix& outputOrder,
+                                   float downmixMix,
+                                   float dropLfeMix) noexcept;
 
     enum class GlobalBypassState
     {
@@ -552,6 +583,13 @@ private:
     juce::AudioBuffer<float> staticSleepSpatialOutputBuffer;
     juce::AudioBuffer<float> staticSleepLfeBuffer;
     juce::AudioBuffer<float> staticSleepSanitisedInputBuffer;
+    juce::AudioBuffer<float> steadyMainLookaheadBuffer;
+    juce::AudioBuffer<float> steadyMainBypassBuffer;
+    juce::AudioBuffer<float> steadySidechainDelayedBuffer;
+    juce::AudioBuffer<float> steadyCrossoverLowBuffer;
+    juce::AudioBuffer<float> steadyCrossoverHighBuffer;
+    juce::AudioBuffer<float> steadyDelayedLowBuffer;
+    juce::AudioBuffer<float> steadyDelayedHighBuffer;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
         smoothedSidechainDelaySamples;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
@@ -594,7 +632,11 @@ private:
     int globalBypassWarmupSamplesRemaining = 0;
     int crossoverWarmupSamplesRemaining = 0;
     std::uint64_t staticSilentSidechainBlockCount = 0;
+    std::uint64_t steadyActiveBlockCount = 0;
     bool crossoverPathSleeping = false;
+#if SMART_DUCKING_ENABLE_TEST_HOOKS
+    bool steadyActiveBlockPathEnabledForTesting = true;
+#endif
     GlobalBypassState globalBypassState = GlobalBypassState::active;
 
     std::atomic<float> mainInputPeakLeft { 0.0f };

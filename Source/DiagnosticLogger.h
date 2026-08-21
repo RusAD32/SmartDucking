@@ -46,6 +46,11 @@ public:
                                std::uint64_t wideGainTicks,
                                std::uint64_t inverseTicks,
                                std::uint64_t olaTicks) noexcept;
+    void recordProcessorStages (std::uint64_t mainDelayTicks,
+                                std::uint64_t sidechainDelayTicks,
+                                std::uint64_t inputRoutingTicks,
+                                std::uint64_t crossoverTicks,
+                                std::uint64_t outputRoutingTicks) noexcept;
     void recordResolutionChange (int fftResolution, int latencySamples) noexcept;
     void recordEditorOpened() noexcept;
     void recordEditorClosed() noexcept;
@@ -94,6 +99,11 @@ private:
     std::atomic<std::uint64_t> editorTimerTicks { 0 };
     std::atomic<bool> visualisationEnabled { false };
     std::atomic<std::uint64_t> processBlockTicks { 0 };
+    std::atomic<std::uint64_t> mainDelayTicks { 0 };
+    std::atomic<std::uint64_t> sidechainDelayTicks { 0 };
+    std::atomic<std::uint64_t> inputRoutingTicks { 0 };
+    std::atomic<std::uint64_t> crossoverTicks { 0 };
+    std::atomic<std::uint64_t> outputRoutingTicks { 0 };
     std::atomic<std::uint64_t> spectralFrameCount { 0 };
     std::atomic<std::uint64_t> spectralFrameTicks { 0 };
     std::atomic<std::uint64_t> dryVisualisationCount { 0 };

@@ -8,6 +8,8 @@ In QUALITY, Main is split with a selectable minimum-phase Linkwitz–Riley cross
 
 `SpectralSuppressor` remains the orchestration boundary, while persistent PCE state and reusable frame/control smoothing live in `PceHistory.h` and `SpectralFrameSmoothers.h`. The extraction is protected by characterization tests and does not change the signal path.
 
+`RealFft` adapts the pinned PFFFT backend to the engine's positive-frequency layout, with JUCE FFT retained as the compile-time reference. `SpectralVectorMath` keeps scalar and xsimd implementations behind one interface. xsimd handles magnitude power-to-dB, temporal mask smoothing and gain, plus the NORMAL crossover/spectral/wideband gain pass. arm64 selects NEON; x86 starts with baseline SSE and dispatches to a separately compiled AVX2 kernel only when runtime CPU detection permits it. The incomplete final batch of every real FFT stays scalar.
+
 ## Plug-in classes and physical buses
 
 One `Smart Ducking.vst3` bundle registers two audio-module classes. `Smart Ducking (Stereo)` uses fixed `2 + 6 + 2` buses and `Smart Ducking (Surround)` uses fixed `6 + 6 + 6` buses. The VST3 wrapper only selects the processor variant; processor, DSP, parameters, state, and editor implementation are shared. Main format is fixed by the selected class. The common 5.1 Voice sidechain bus is interpreted by the Voice Stereo/Surround selector.

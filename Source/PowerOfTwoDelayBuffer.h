@@ -131,6 +131,61 @@ public:
         }
     }
 
+    void processBlockTwoTap (int channel,
+                             const float* input,
+                             float* firstOutput,
+                             float* secondOutput,
+                             int numSamples,
+                             int firstDelaySamples,
+                             int secondDelaySamples) noexcept
+    {
+        if (numSamples <= 0)
+            return;
+
+        const auto index = static_cast<size_t> (channel);
+        jassert (index < storage.size());
+        jassert (input != nullptr && firstOutput != nullptr && secondOutput != nullptr);
+        jassert (firstOutput != secondOutput);
+        jassert (firstDelaySamples >= 0 && firstDelaySamples <= maximumDelay);
+        jassert (secondDelaySamples >= 0 && secondDelaySamples <= maximumDelay);
+
+        auto& position = writePositions[index];
+        auto& samples = storage[index];
+        auto processed = 0;
+
+        while (processed < numSamples)
+        {
+            const auto firstReadPosition =
+                (position - static_cast<size_t> (firstDelaySamples)) & ringMask;
+            const auto secondReadPosition =
+                (position - static_cast<size_t> (secondDelaySamples)) & ringMask;
+            const auto remaining = static_cast<size_t> (numSamples - processed);
+            auto chunk = std::min (remaining, ringSize - position);
+
+            if (firstDelaySamples > 0)
+                chunk = std::min ({ chunk,
+                                    ringSize - firstReadPosition,
+                                    static_cast<size_t> (firstDelaySamples) });
+
+            if (secondDelaySamples > 0)
+                chunk = std::min ({ chunk,
+                                    ringSize - secondReadPosition,
+                                    static_cast<size_t> (secondDelaySamples) });
+
+            // Capture the source before writing either destination. This keeps
+            // the operation safe when one output aliases the input buffer.
+            std::copy_n (input + processed, chunk, samples.data() + position);
+            std::copy_n (samples.data() + firstReadPosition,
+                         chunk,
+                         firstOutput + processed);
+            std::copy_n (samples.data() + secondReadPosition,
+                         chunk,
+                         secondOutput + processed);
+            position = (position + chunk) & ringMask;
+            processed += static_cast<int> (chunk);
+        }
+    }
+
     [[nodiscard]] size_t getAllocatedSamples() const noexcept
     {
         return ringSize * storage.size();

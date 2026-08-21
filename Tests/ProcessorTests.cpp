@@ -1,5 +1,7 @@
 #include <cmath>
 #include <array>
+#include <bit>
+#include <cstdint>
 #include <functional>
 #include <iostream>
 #include <vector>
@@ -11,10 +13,12 @@
 #include "LinkwitzRileyCrossover.h"
 #include "PceHistory.h"
 #include "PowerOfTwoDelayBuffer.h"
+#include "RealFft.h"
 #include "SidechainClassifier.h"
 #include "SidechainEnvelope.h"
 #include "SpectralFrameSmoothers.h"
 #include "SpectralSuppressor.h"
+#include "SpectralVectorMath.h"
 #include "UserPresetStore.h"
 
 namespace
@@ -33,6 +37,12 @@ void expect (bool condition, const char* message)
 bool approximatelyEqual (float left, float right, float tolerance = 1.0e-6f)
 {
     return std::abs (left - right) <= tolerance;
+}
+
+bool exactlyEqual (float left, float right)
+{
+    return std::bit_cast<std::uint32_t> (left)
+        == std::bit_cast<std::uint32_t> (right);
 }
 
 void setParameter (SmartDuckingAudioProcessor& processor, const char* id, float rawValue)
@@ -515,11 +525,465 @@ int findWidebandOnsetSample (float lookaheadMs)
     processor.notifyEditorClosed();
     return onset;
 }
+
+float maximumAbsoluteDifference (const std::vector<float>& left,
+                                 const std::vector<float>& right)
+{
+    auto maximum = 0.0f;
+    for (size_t index = 0; index < left.size(); ++index)
+        maximum = std::max (maximum, std::abs (left[index] - right[index]));
+    return maximum;
+}
+
+void testSpectralVectorMathBackend()
+{
+    namespace svm = smart_ducking::spectral_vector_math;
+    expect (svm::getBackendSimdWidth (svm::Backend::vector) > 1,
+            "xsimd vector-math backend selects a real SIMD architecture");
+
+    auto powersMatch = true;
+    auto smoothingMatches = true;
+    auto normalGainMatches = true;
+    auto scalarTailsMatchExactly = true;
+
+    for (const auto bins : { 513, 1025, 2049, 4097 })
+    {
+        std::vector<float> powers (static_cast<size_t> (bins));
+        std::vector<float> scalarDb (static_cast<size_t> (bins));
+        std::vector<float> vectorDb (static_cast<size_t> (bins));
+
+        for (int bin = 0; bin < bins; ++bin)
+        {
+            const auto phase = static_cast<float> (bin) * 0.019f;
+            powers[static_cast<size_t> (bin)] = bin % 97 == 0
+                ? 0.0f
+                : 1.0e-12f + 0.75f * std::abs (std::sin (phase));
+        }
+
+        svm::powersToDecibels (
+            powers.data(), scalarDb.data(), bins, -160.0f, svm::Backend::scalar);
+        svm::powersToDecibels (
+            powers.data(), vectorDb.data(), bins, -160.0f, svm::Backend::vector);
+        powersMatch = powersMatch
+                   && maximumAbsoluteDifference (scalarDb, vectorDb) <= 1.0e-5f;
+        scalarTailsMatchExactly = scalarTailsMatchExactly
+                               && exactlyEqual (scalarDb.back(), vectorDb.back());
+
+        std::vector<float> targets (static_cast<size_t> (bins));
+        std::vector<float> scalarTemporal (static_cast<size_t> (bins));
+        std::vector<float> vectorTemporal (static_cast<size_t> (bins));
+        std::vector<float> scalarApplied (static_cast<size_t> (bins));
+        std::vector<float> vectorApplied (static_cast<size_t> (bins));
+        std::vector<float> scalarTransform (static_cast<size_t> (2 * bins));
+        std::vector<float> vectorTransform (static_cast<size_t> (2 * bins));
+
+        for (int bin = 0; bin < bins; ++bin)
+        {
+            const auto index = static_cast<size_t> (bin);
+            targets[index] = 12.0f * std::abs (std::sin (0.013f * bin));
+            scalarTemporal[index] = 9.0f * std::abs (std::cos (0.017f * bin));
+            vectorTemporal[index] = scalarTemporal[index];
+            scalarTransform[2 * index] = 0.1f + 0.8f * std::sin (0.011f * bin);
+            scalarTransform[2 * index + 1] = -0.2f + 0.7f * std::cos (0.007f * bin);
+        }
+        vectorTransform = scalarTransform;
+
+        const svm::MaskSmoothingParameters smoothingParameters {
+            0.73f, 0.91f, 0.67f, 3.25f, false
+        };
+        const auto scalarMaximum = svm::smoothMaskAndApplyGain (
+            targets.data(),
+            scalarTemporal.data(),
+            scalarApplied.data(),
+            scalarTransform.data(),
+            bins,
+            smoothingParameters,
+            svm::Backend::scalar);
+        const auto vectorMaximum = svm::smoothMaskAndApplyGain (
+            targets.data(),
+            vectorTemporal.data(),
+            vectorApplied.data(),
+            vectorTransform.data(),
+            bins,
+            smoothingParameters,
+            svm::Backend::vector);
+        smoothingMatches = smoothingMatches
+                        && std::abs (scalarMaximum - vectorMaximum) <= 2.0e-6f
+                        && maximumAbsoluteDifference (scalarTemporal, vectorTemporal)
+                               <= 2.0e-6f
+                        && maximumAbsoluteDifference (scalarApplied, vectorApplied)
+                               <= 2.0e-6f
+                        && maximumAbsoluteDifference (scalarTransform, vectorTransform)
+                               <= 2.0e-6f;
+        scalarTailsMatchExactly = scalarTailsMatchExactly
+                               && exactlyEqual (scalarApplied.back(), vectorApplied.back())
+                               && exactlyEqual (scalarTransform.back(), vectorTransform.back());
+
+        std::vector<float> crossoverWeights (static_cast<size_t> (bins));
+        std::vector<float> scalarReduction (static_cast<size_t> (bins));
+        std::vector<float> vectorReduction (static_cast<size_t> (bins));
+        scalarTransform.resize (static_cast<size_t> (2 * bins));
+
+        for (int bin = 0; bin < bins; ++bin)
+        {
+            const auto index = static_cast<size_t> (bin);
+            crossoverWeights[index] = static_cast<float> (bin)
+                                    / static_cast<float> (bins - 1);
+            scalarReduction[index] = 16.0f * std::abs (std::sin (0.021f * bin));
+            scalarTransform[2 * index] = 0.15f + 0.6f * std::sin (0.005f * bin);
+            scalarTransform[2 * index + 1] = -0.1f + 0.5f * std::cos (0.009f * bin);
+        }
+        vectorReduction = scalarReduction;
+        vectorTransform = scalarTransform;
+
+        const svm::NormalCrossoverParameters normalParameters {
+            0.42f, 0.83f, 1.0e-12f, true
+        };
+        const auto scalarMinimum = svm::applyNormalCrossoverGain (
+            crossoverWeights.data(),
+            scalarReduction.data(),
+            scalarTransform.data(),
+            bins,
+            normalParameters,
+            svm::Backend::scalar);
+        const auto vectorMinimum = svm::applyNormalCrossoverGain (
+            crossoverWeights.data(),
+            vectorReduction.data(),
+            vectorTransform.data(),
+            bins,
+            normalParameters,
+            svm::Backend::vector);
+        normalGainMatches = normalGainMatches
+                         && std::abs (scalarMinimum - vectorMinimum) <= 2.0e-6f
+                         && maximumAbsoluteDifference (scalarReduction, vectorReduction)
+                                <= 1.0e-5f
+                         && maximumAbsoluteDifference (scalarTransform, vectorTransform)
+                                <= 2.0e-6f;
+        scalarTailsMatchExactly = scalarTailsMatchExactly
+                               && exactlyEqual (scalarReduction.back(), vectorReduction.back())
+                               && exactlyEqual (scalarTransform.back(), vectorTransform.back());
+    }
+
+    expect (powersMatch, "xsimd magnitude dB conversion nulls against scalar");
+    expect (smoothingMatches, "xsimd spectral smoothing/gain nulls against scalar");
+    expect (normalGainMatches, "xsimd NORMAL crossover/gain nulls against scalar");
+    expect (scalarTailsMatchExactly,
+            "xsimd kernels leave the final real-FFT bin on the bit-exact scalar tail");
+
+    auto endToEndMaximumError = 0.0f;
+    double endToEndErrorEnergy = 0.0;
+    double endToEndReferenceEnergy = 0.0;
+
+    for (const auto economyMode : { false, true })
+    {
+        for (int resolution = 0; resolution < 3; ++resolution)
+        {
+            smart_ducking::StereoSpectralLcrProcessor scalarProcessor;
+            smart_ducking::StereoSpectralLcrProcessor vectorProcessor;
+            scalarProcessor.setVectorMathBackendForTests (svm::Backend::scalar);
+            vectorProcessor.setVectorMathBackendForTests (svm::Backend::vector);
+            scalarProcessor.prepare (48000.0);
+            vectorProcessor.prepare (48000.0);
+            scalarProcessor.setEconomyMode (economyMode);
+            vectorProcessor.setEconomyMode (economyMode);
+            scalarProcessor.setResolutionIndex (resolution);
+            vectorProcessor.setResolutionIndex (resolution);
+            auto parameters = smart_ducking::StereoSpectralLcrProcessor::Parameters {};
+            parameters.attackMs = 0.0f;
+            parameters.holdMs = 0.0f;
+            parameters.releaseMs = 70.0f;
+            parameters.duckDepthDb = 7.0f;
+            parameters.amountDb = 14.0f;
+            scalarProcessor.setParameters (parameters);
+            vectorProcessor.setParameters (parameters);
+
+            const auto samples = scalarProcessor.getLatencySamples() * 3;
+            for (int sample = 0; sample < samples; ++sample)
+            {
+                const auto mainLeft = 0.31f * static_cast<float> (
+                    std::sin (0.019 * static_cast<double> (sample)));
+                const auto mainRight = 0.27f * static_cast<float> (
+                    std::cos (0.023 * static_cast<double> (sample)));
+                const auto voice = sample < samples * 2 / 3
+                    ? 0.42f * static_cast<float> (
+                        std::sin (0.031 * static_cast<double> (sample)))
+                    : 0.0f;
+                const auto scalar = scalarProcessor.processSample (
+                    mainLeft, mainRight, voice, 0.73f * voice);
+                const auto vector = vectorProcessor.processSample (
+                    mainLeft, mainRight, voice, 0.73f * voice);
+
+                for (int channel = 0; channel < 5; ++channel)
+                {
+                    const auto reference = scalar.get (channel);
+                    const auto error = std::abs (vector.get (channel) - reference);
+                    endToEndMaximumError = std::max (endToEndMaximumError, error);
+                    endToEndErrorEnergy += static_cast<double> (error) * error;
+                    endToEndReferenceEnergy += static_cast<double> (reference) * reference;
+                }
+            }
+        }
+    }
+
+    const auto relativeRmsError = std::sqrt (
+        endToEndErrorEnergy / std::max (1.0e-30, endToEndReferenceEnergy));
+    expect (endToEndMaximumError <= 2.0e-5f && relativeRmsError <= 2.0e-5,
+            "scalar and xsimd spectral processors null end-to-end in every mode/resolution");
+}
+
+void testRealFftBackend()
+{
+#if SMART_DUCKING_USE_PFFFT
+    expect (smart_ducking::RealFft::getBackendSimdWidth() > 1,
+            "PFFFT backend uses a SIMD implementation on supported release targets");
+#endif
+
+    auto spectraMatch = true;
+    auto inverseMatches = true;
+
+    for (int order = 9; order <= 13; ++order)
+    {
+        const auto size = 1 << order;
+        smart_ducking::RealFft backend (order);
+        juce::dsp::FFT referenceFft (order);
+        std::vector<float> backendData (static_cast<size_t> (2 * size), 0.0f);
+        std::vector<float> referenceData (static_cast<size_t> (2 * size), 0.0f);
+
+        for (int sample = 0; sample < size; ++sample)
+        {
+            const auto position = static_cast<float> (sample);
+            const auto value = 0.37f * std::sin (0.013f * position)
+                             + 0.19f * std::cos (0.071f * position)
+                             + (sample == 17 ? 0.5f : 0.0f);
+            backendData[static_cast<size_t> (sample)] = value;
+            referenceData[static_cast<size_t> (sample)] = value;
+        }
+
+        backend.forward (backendData.data());
+        referenceFft.performRealOnlyForwardTransform (referenceData.data(), true);
+
+        double spectralErrorSquared = 0.0;
+        double spectralReferenceSquared = 0.0;
+        auto maximumSpectralError = 0.0f;
+        auto maximumSpectralReference = 0.0f;
+
+        for (int value = 0; value <= size + 1; ++value)
+        {
+            const auto actual = backendData[static_cast<size_t> (value)];
+            const auto expected = referenceData[static_cast<size_t> (value)];
+            const auto error = std::abs (actual - expected);
+            spectralErrorSquared += static_cast<double> (error) * error;
+            spectralReferenceSquared += static_cast<double> (expected) * expected;
+            maximumSpectralError = std::max (maximumSpectralError, error);
+            maximumSpectralReference = std::max (maximumSpectralReference,
+                                                 std::abs (expected));
+        }
+
+        const auto relativeSpectralRms = std::sqrt (
+            spectralErrorSquared / std::max (1.0e-20, spectralReferenceSquared));
+        spectraMatch = spectraMatch
+                    && relativeSpectralRms < 2.0e-5
+                    && maximumSpectralError
+                           < 2.0e-4f * std::max (1.0f, maximumSpectralReference);
+
+        for (int bin = 0; bin <= size / 2; ++bin)
+        {
+            const auto gain = 0.25f + 0.75f * static_cast<float> (bin)
+                                        / static_cast<float> (size / 2);
+            const auto offset = static_cast<size_t> (2 * bin);
+            backendData[offset] *= gain;
+            backendData[offset + 1] *= gain;
+            referenceData[offset] *= gain;
+            referenceData[offset + 1] *= gain;
+        }
+
+        backend.inverse (backendData.data());
+        referenceFft.performRealOnlyInverseTransform (referenceData.data());
+
+        double inverseErrorSquared = 0.0;
+        double inverseReferenceSquared = 0.0;
+        auto maximumInverseError = 0.0f;
+        auto maximumInverseReference = 0.0f;
+
+        for (int sample = 0; sample < size; ++sample)
+        {
+            const auto actual = backendData[static_cast<size_t> (sample)];
+            const auto expected = referenceData[static_cast<size_t> (sample)];
+            const auto error = std::abs (actual - expected);
+            inverseErrorSquared += static_cast<double> (error) * error;
+            inverseReferenceSquared += static_cast<double> (expected) * expected;
+            maximumInverseError = std::max (maximumInverseError, error);
+            maximumInverseReference = std::max (maximumInverseReference,
+                                                std::abs (expected));
+        }
+
+        const auto relativeInverseRms = std::sqrt (
+            inverseErrorSquared / std::max (1.0e-20, inverseReferenceSquared));
+        inverseMatches = inverseMatches
+                      && relativeInverseRms < 2.0e-5
+                      && maximumInverseError
+                             < 2.0e-4f * std::max (1.0f, maximumInverseReference);
+    }
+
+    expect (spectraMatch,
+            "selected real FFT backend matches JUCE positive-frequency spectra");
+    expect (inverseMatches,
+            "selected real FFT backend matches JUCE after spectral-bin processing");
+}
+
+#if ! SMART_DUCKING_ENABLE_DIAGNOSTICS && SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH
+void testSteadyActiveBlockPath (smart_ducking::PluginVariant variant,
+                                bool normalMode,
+                                bool downmix)
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int maximumBlockSize = 512;
+    SmartDuckingAudioProcessor blockProcessor (variant);
+    SmartDuckingAudioProcessor sampleProcessor (variant);
+
+    const auto configure = [normalMode, downmix] (auto& processor)
+    {
+        setParameter (processor,
+                      smart_ducking::parameter_ids::processingMode,
+                      normalMode ? 1.0f : 0.0f);
+        setParameter (processor, smart_ducking::parameter_ids::fftResolution, 0.0f);
+        setParameter (processor, smart_ducking::parameter_ids::crossoverHz, 73.0f);
+
+        if (processor.isSurroundVariant())
+        {
+            setParameter (processor, smart_ducking::parameter_ids::voiceFormat, 1.0f);
+            setParameter (processor, smart_ducking::parameter_ids::mainChannelOrder, 1.0f);
+            setParameter (processor, smart_ducking::parameter_ids::voiceChannelOrder, 2.0f);
+            setParameter (processor, smart_ducking::parameter_ids::outputChannelOrder, 3.0f);
+            setParameter (processor,
+                          smart_ducking::parameter_ids::downmix,
+                          downmix ? 1.0f : 0.0f);
+        }
+    };
+
+    configure (blockProcessor);
+    configure (sampleProcessor);
+    blockProcessor.prepareToPlay (sampleRate, maximumBlockSize);
+    sampleProcessor.prepareToPlay (sampleRate, maximumBlockSize);
+    sampleProcessor.setSteadyActiveBlockPathEnabledForTesting (false);
+
+    const auto mainChannels = blockProcessor.getChannelCountOfBus (true, 0);
+    constexpr std::array<int, 7> blockSizes { 1, 7, 31, 64, 127, 255, 512 };
+    juce::MidiBuffer blockMidi;
+    juce::MidiBuffer sampleMidi;
+    auto absoluteSample = 0;
+    auto maximumError = 0.0f;
+    double errorEnergy = 0.0;
+    double referenceEnergy = 0.0;
+
+    const auto processComparisonBlock = [&] (int numSamples)
+    {
+        juce::AudioBuffer<float> source (mainChannels + 6, numSamples);
+        juce::AudioBuffer<float> blockBuffer (mainChannels + 6, numSamples);
+        juce::AudioBuffer<float> sampleBuffer (mainChannels + 6, numSamples);
+        source.clear();
+
+        for (int sample = 0; sample < numSamples; ++sample)
+        {
+            const auto position = static_cast<double> (absoluteSample + sample);
+
+            for (int channel = 0; channel < mainChannels; ++channel)
+            {
+                const auto value = 0.19f * static_cast<float> (std::sin (
+                    0.017 * position + 0.31 * static_cast<double> (channel)))
+                    + ((absoluteSample + sample + 37 * channel) % 911 == 0
+                           ? 0.13f : 0.0f);
+                source.setSample (channel, sample, value);
+            }
+
+            for (int channel = 0; channel < 6; ++channel)
+            {
+                const auto value = 0.23f * static_cast<float> (std::cos (
+                    0.029 * position + 0.23 * static_cast<double> (channel)));
+                source.setSample (mainChannels + channel, sample, value);
+            }
+        }
+
+        blockBuffer.makeCopyOf (source, true);
+        sampleBuffer.makeCopyOf (source, true);
+        blockProcessor.processBlock (blockBuffer, blockMidi);
+        sampleProcessor.processBlock (sampleBuffer, sampleMidi);
+
+        for (int channel = 0; channel < mainChannels; ++channel)
+            for (int sample = 0; sample < numSamples; ++sample)
+            {
+                const auto actual = blockBuffer.getSample (channel, sample);
+                const auto reference = sampleBuffer.getSample (channel, sample);
+                const auto error = actual - reference;
+                maximumError = std::max (maximumError, std::abs (error));
+                errorEnergy += static_cast<double> (error) * error;
+                referenceEnergy += static_cast<double> (reference) * reference;
+            }
+
+        absoluteSample += numSamples;
+    };
+
+    for (int block = 0; block < 28; ++block)
+        processComparisonBlock (blockSizes[static_cast<size_t> (block)
+                                           % blockSizes.size()]);
+
+    const auto steadyBlocksBeforeAutomation = blockProcessor.getSteadyActiveBlockCount();
+    expect (steadyBlocksBeforeAutomation > 0,
+            "steady active block path engages for stable active processing");
+    processComparisonBlock (maximumBlockSize + 1);
+    expect (blockProcessor.getSteadyActiveBlockCount() == steadyBlocksBeforeAutomation,
+            "blocks larger than the prepared scratch capacity use the sample fallback");
+
+    if (normalMode)
+    {
+        setParameter (blockProcessor, smart_ducking::parameter_ids::lookaheadMs, 19.0f);
+        setParameter (sampleProcessor, smart_ducking::parameter_ids::lookaheadMs, 19.0f);
+    }
+    else
+    {
+        setParameter (blockProcessor, smart_ducking::parameter_ids::crossoverHz, 118.0f);
+        setParameter (sampleProcessor, smart_ducking::parameter_ids::crossoverHz, 118.0f);
+    }
+
+    processComparisonBlock (127);
+    expect (blockProcessor.getSteadyActiveBlockCount() == steadyBlocksBeforeAutomation,
+            normalMode
+                ? "lookahead ramps fall back to sample processing for the whole block"
+                : "crossover ramps fall back to sample processing for the whole block");
+
+    for (int block = 0; block < 28; ++block)
+        processComparisonBlock (128);
+
+    expect (blockProcessor.getSteadyActiveBlockCount() > steadyBlocksBeforeAutomation,
+            "steady active block path resumes after parameter ramps settle");
+
+    if (variant == smart_ducking::PluginVariant::surround)
+    {
+        const auto steadyBlocksBeforeRouting = blockProcessor.getSteadyActiveBlockCount();
+        setParameter (blockProcessor,
+                      smart_ducking::parameter_ids::mainChannelOrder,
+                      2.0f);
+        setParameter (sampleProcessor,
+                      smart_ducking::parameter_ids::mainChannelOrder,
+                      2.0f);
+        processComparisonBlock (64);
+        expect (blockProcessor.getSteadyActiveBlockCount() == steadyBlocksBeforeRouting,
+                "channel-routing transitions use the sample fallback");
+    }
+
+    const auto relativeRmsError = std::sqrt (
+        errorEnergy / std::max (1.0e-30, referenceEnergy));
+    expect (maximumError <= 1.0e-6f && relativeRmsError <= 2.0e-7,
+            "steady block and generic active paths null across variable blocks and automation");
+}
+#endif
 } // namespace
 
 int main()
 {
     juce::ScopedJuceInitialiser_GUI initialiseJuceGui;
+    testRealFftBackend();
+    testSpectralVectorMathBackend();
 
     {
         smart_ducking::PowerOfTwoDelayBuffer delay;
@@ -569,7 +1033,177 @@ int main()
         }
         expect (blockPathMatches,
                 "fixed delay block processing matches the sample timeline for variable blocks");
+
+        smart_ducking::PowerOfTwoDelayBuffer sampleTwoTapDelay;
+        smart_ducking::PowerOfTwoDelayBuffer blockTwoTapDelay;
+        sampleTwoTapDelay.prepare (1, maximumDelay);
+        blockTwoTapDelay.prepare (1, maximumDelay);
+        std::array<float, 63> firstOutput {};
+        std::array<float, 63> secondOutput {};
+        auto twoTapBlockMatches = true;
+        for (const auto firstDelay : { 0, 7 })
+        {
+            sampleTwoTapDelay.reset();
+            blockTwoTapDelay.reset();
+            sourceIndex = 0;
+
+            for (const auto blockSize : blockSizes)
+            {
+                for (int sample = 0; sample < blockSize; ++sample)
+                    input[static_cast<size_t> (sample)] = static_cast<float> (++sourceIndex)
+                        * (sample % 2 == 0 ? 0.75f : -0.5f);
+
+                blockTwoTapDelay.processBlockTwoTap (0,
+                                                     input.data(),
+                                                     firstOutput.data(),
+                                                     secondOutput.data(),
+                                                     blockSize,
+                                                     firstDelay,
+                                                     31);
+
+                for (int sample = 0; sample < blockSize; ++sample)
+                {
+                    const auto expected = sampleTwoTapDelay.processSample (
+                        0, input[static_cast<size_t> (sample)], firstDelay, 31);
+                    twoTapBlockMatches = twoTapBlockMatches
+                        && exactlyEqual (firstOutput[static_cast<size_t> (sample)],
+                                         expected.first)
+                        && exactlyEqual (secondOutput[static_cast<size_t> (sample)],
+                                         expected.second);
+                }
+            }
+        }
+
+        expect (twoTapBlockMatches,
+                "two-tap block delay is sample-exact for zero/nonzero taps and variable blocks");
     }
+
+    for (const auto slopeDbPerOctave : { 24.0f, 36.0f, 48.0f, 60.0f, 72.0f })
+        for (const auto stereo : { true, false })
+        {
+            constexpr int totalSamples = 1537;
+            constexpr std::array<int, 7> crossoverBlockSizes {
+                1, 5, 17, 63, 128, 255, 511
+            };
+            smart_ducking::LinkwitzRileyCrossover sampleCrossover;
+            smart_ducking::LinkwitzRileyCrossover blockCrossover;
+            sampleCrossover.prepare (48000.0, 730.0f, slopeDbPerOctave);
+            blockCrossover.prepare (48000.0, 730.0f, slopeDbPerOctave);
+            std::array<std::vector<float>, 5> input;
+            std::array<std::vector<float>, 5> sampleLow;
+            std::array<std::vector<float>, 5> sampleHigh;
+            std::array<std::vector<float>, 5> blockLow;
+            std::array<std::vector<float>, 5> blockHigh;
+
+            for (int channel = 0; channel < 5; ++channel)
+            {
+                input[static_cast<size_t> (channel)].resize (totalSamples);
+                sampleLow[static_cast<size_t> (channel)].resize (totalSamples);
+                sampleHigh[static_cast<size_t> (channel)].resize (totalSamples);
+                blockLow[static_cast<size_t> (channel)].resize (totalSamples);
+                blockHigh[static_cast<size_t> (channel)].resize (totalSamples);
+
+                for (int sample = 0; sample < totalSamples; ++sample)
+                    input[static_cast<size_t> (channel)][static_cast<size_t> (sample)] =
+                        0.31f * static_cast<float> (std::sin (
+                            0.023 * static_cast<double> (sample)
+                            + 0.41 * static_cast<double> (channel)));
+            }
+
+            auto processed = 0;
+            auto blockIndex = size_t { 0 };
+
+            while (processed < totalSamples)
+            {
+                const auto blockSize = juce::jmin (
+                    totalSamples - processed,
+                    crossoverBlockSizes[blockIndex++ % crossoverBlockSizes.size()]);
+                std::array<const float*, 5> inputPointers {};
+                std::array<float*, 5> lowPointers {};
+                std::array<float*, 5> highPointers {};
+
+                for (int channel = 0; channel < 5; ++channel)
+                {
+                    if (stereo && channel != 0 && channel != 2)
+                        continue;
+
+                    const auto index = static_cast<size_t> (channel);
+                    inputPointers[index] = input[index].data() + processed;
+                    lowPointers[index] = blockLow[index].data() + processed;
+                    highPointers[index] = blockHigh[index].data() + processed;
+                }
+
+                blockCrossover.processSteadyBlock (inputPointers,
+                                                   lowPointers,
+                                                   highPointers,
+                                                   blockSize,
+                                                   stereo);
+
+                for (int sample = 0; sample < blockSize; ++sample)
+                {
+                    sampleCrossover.beginSample();
+                    for (int channel = 0; channel < 5; ++channel)
+                    {
+                        if (stereo && channel != 0 && channel != 2)
+                            continue;
+
+                        const auto index = static_cast<size_t> (channel);
+                        const auto bands = sampleCrossover.processSample (
+                            channel, input[index][static_cast<size_t> (processed + sample)]);
+                        sampleLow[index][static_cast<size_t> (processed + sample)] = bands.low;
+                        sampleHigh[index][static_cast<size_t> (processed + sample)] = bands.high;
+                    }
+                }
+
+                processed += blockSize;
+            }
+
+            auto crossoverBlockMatches = true;
+            auto maximumCrossoverBlockError = 0.0f;
+            for (int channel = 0; channel < 5; ++channel)
+            {
+                if (stereo && channel != 0 && channel != 2)
+                    continue;
+
+                for (int sample = 0; sample < totalSamples; ++sample)
+                {
+                    const auto index = static_cast<size_t> (channel);
+                    const auto sampleIndex = static_cast<size_t> (sample);
+                    crossoverBlockMatches = crossoverBlockMatches
+                        && std::isfinite (blockLow[index][sampleIndex])
+                        && std::isfinite (blockHigh[index][sampleIndex]);
+                    maximumCrossoverBlockError = std::max ({
+                        maximumCrossoverBlockError,
+                        std::abs (blockLow[index][sampleIndex]
+                                  - sampleLow[index][sampleIndex]),
+                        std::abs (blockHigh[index][sampleIndex]
+                                  - sampleHigh[index][sampleIndex])
+                    });
+                }
+            }
+            crossoverBlockMatches = crossoverBlockMatches
+                                 && maximumCrossoverBlockError <= 1.0e-7f;
+
+            expect (crossoverBlockMatches,
+                    "SIMD Linkwitz-Riley block kernel nulls against the sample path");
+            blockCrossover.setCutoffHz (1180.0f);
+            expect (! blockCrossover.canProcessSteadyBlock(),
+                    "Linkwitz-Riley block kernel rejects cutoff automation");
+
+            smart_ducking::LinkwitzRileyCrossover slopeTransitionCrossover;
+            slopeTransitionCrossover.prepare (48000.0, 730.0f, slopeDbPerOctave);
+            slopeTransitionCrossover.setSlopeDbPerOctave (
+                slopeDbPerOctave < 72.0f ? 72.0f : 24.0f);
+            expect (! slopeTransitionCrossover.canProcessSteadyBlock(),
+                    "Linkwitz-Riley block kernel rejects slope transitions");
+        }
+
+#if ! SMART_DUCKING_ENABLE_DIAGNOSTICS && SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH
+    testSteadyActiveBlockPath (smart_ducking::PluginVariant::stereo, false, false);
+    testSteadyActiveBlockPath (smart_ducking::PluginVariant::stereo, true, false);
+    testSteadyActiveBlockPath (smart_ducking::PluginVariant::surround, false, false);
+    testSteadyActiveBlockPath (smart_ducking::PluginVariant::surround, true, true);
+#endif
 
     SmartDuckingAudioProcessor processor;
     SmartDuckingAudioProcessor surroundProcessor (smart_ducking::PluginVariant::surround);

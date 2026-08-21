@@ -16,6 +16,21 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(SMART_DUCKING_USE_PFFFT
+    "Use PFFFT instead of juce::dsp::FFT for real-time spectral processing"
+    ON)
+option(SMART_DUCKING_ENABLE_DIAGNOSTICS
+    "Enable detailed DSP stage timing and diagnostic logs"
+    OFF)
+option(SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH
+    "Enable the allocation-free active steady-state block path"
+    ON)
+option(SMART_DUCKING_USE_XSIMD
+    "Use xsimd vector math in the spectral mask and gain kernels"
+    ON)
+set(PFFFT_PATH "" CACHE PATH "Optional path to a local PFFFT source tree")
+set(XSIMD_PATH "" CACHE PATH "Optional path to a local xsimd source tree")
+
 set(JUCE_PATH "$ENV{JUCE_PATH}" CACHE PATH "Path to the JUCE source tree")
 
 # Reuse the workspace-level JUCE checkout when this repository is kept under
@@ -46,6 +61,109 @@ else()
         FetchContent_MakeAvailable(JUCE)
     endif()
 endif()
+
+set(smart_ducking_fft_link_target "")
+
+if (SMART_DUCKING_USE_PFFFT)
+    set(PFFFT_USE_TYPE_FLOAT ON CACHE BOOL "" FORCE)
+    set(PFFFT_USE_TYPE_DOUBLE OFF CACHE BOOL "" FORCE)
+    set(PFFFT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(PFFFT_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    set(PFFFT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(INSTALL_PFFFT OFF CACHE BOOL "" FORCE)
+    set(INSTALL_PFDSP OFF CACHE BOOL "" FORCE)
+    set(INSTALL_PFFASTCONV OFF CACHE BOOL "" FORCE)
+
+    if (PFFFT_PATH)
+        if (NOT EXISTS "${PFFFT_PATH}/CMakeLists.txt")
+            message(FATAL_ERROR
+                "PFFFT_PATH does not point to a PFFFT source tree: ${PFFFT_PATH}")
+        endif()
+
+        add_subdirectory("${PFFFT_PATH}" "${CMAKE_BINARY_DIR}/PFFFT" EXCLUDE_FROM_ALL)
+    else()
+        include(FetchContent)
+        FetchContent_Declare(PFFFT
+            GIT_REPOSITORY https://github.com/marton78/pffft.git
+            GIT_TAG a4b03590cc2a4bea56f9721996e3057835799179)
+        FetchContent_MakeAvailable(PFFFT)
+    endif()
+
+    if (NOT TARGET PFFFT::PFFFT)
+        message(FATAL_ERROR "PFFFT::PFFFT target is unavailable")
+    endif()
+
+    # The maintained PFFFT fork requires this definition to select its NEON
+    # implementation. It is harmless on x86, where the SSE path is selected.
+    target_compile_definitions(PFFFT PRIVATE PFFFT_ENABLE_NEON=1)
+    set(smart_ducking_fft_link_target PFFFT::PFFFT)
+endif()
+
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(XSIMD_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+
+if (XSIMD_PATH)
+    if (NOT EXISTS "${XSIMD_PATH}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "XSIMD_PATH does not point to an xsimd source tree: ${XSIMD_PATH}")
+    endif()
+
+    add_subdirectory("${XSIMD_PATH}" "${CMAKE_BINARY_DIR}/xsimd" EXCLUDE_FROM_ALL)
+else()
+    include(FetchContent)
+    FetchContent_Declare(xsimd
+        GIT_REPOSITORY https://github.com/xtensor-stack/xsimd.git
+        GIT_TAG e88a72831858123924f7118f345dfe5d70d95991)
+    FetchContent_MakeAvailable(xsimd)
+endif()
+
+if (NOT TARGET xsimd::xsimd)
+    message(FATAL_ERROR "xsimd::xsimd target is unavailable")
+endif()
+
+set(smart_ducking_has_xsimd_avx2_kernel OFF)
+
+if (MSVC)
+    if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(smart_ducking_has_xsimd_avx2_kernel ON)
+        set_source_files_properties(Source/SpectralVectorMathAvx2.cpp
+            PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+    endif()
+elseif (APPLE)
+    list(FIND CMAKE_OSX_ARCHITECTURES "x86_64" smart_ducking_x86_64_arch_index)
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"
+        OR NOT smart_ducking_x86_64_arch_index EQUAL -1)
+        set(smart_ducking_has_xsimd_avx2_kernel ON)
+        set_source_files_properties(Source/SpectralVectorMathAvx2.cpp
+            PROPERTIES COMPILE_OPTIONS "-Xarch_x86_64;-mavx2")
+    endif()
+elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i.86)$")
+    set(smart_ducking_has_xsimd_avx2_kernel ON)
+    set_source_files_properties(Source/SpectralVectorMathAvx2.cpp
+        PROPERTIES COMPILE_OPTIONS "-mavx2")
+endif()
+
+add_library(SmartDuckingVectorMath STATIC
+    Source/SpectralVectorMath.h
+    Source/SpectralVectorMathKernels.h
+    Source/SpectralVectorMath.cpp)
+
+if (smart_ducking_has_xsimd_avx2_kernel)
+    target_sources(SmartDuckingVectorMath PRIVATE
+        Source/SpectralVectorMathAvx2.cpp)
+endif()
+
+set_target_properties(SmartDuckingVectorMath PROPERTIES
+    POSITION_INDEPENDENT_CODE ON)
+target_include_directories(SmartDuckingVectorMath PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/Source")
+target_compile_features(SmartDuckingVectorMath PUBLIC cxx_std_20)
+target_compile_definitions(SmartDuckingVectorMath PRIVATE
+    SMART_DUCKING_HAS_XSIMD_AVX2_KERNEL=$<BOOL:${smart_ducking_has_xsimd_avx2_kernel}>
+    SMART_DUCKING_USE_XSIMD=$<BOOL:${SMART_DUCKING_USE_XSIMD}>)
+target_link_libraries(SmartDuckingVectorMath PUBLIC xsimd::xsimd)
 
 juce_add_plugin(SmartDucking
     VERSION 1.0.0
@@ -90,10 +208,12 @@ target_sources(SmartDucking PRIVATE
     Source/LinkwitzRileyCrossover.h
     Source/PceHistory.h
     Source/PowerOfTwoDelayBuffer.h
+    Source/RealFft.h
     Source/PluginVariant.h
     Source/SidechainClassifier.h
     Source/SidechainEnvelope.h
     Source/SpectralFrameSmoothers.h
+    Source/SpectralVectorMath.h
     Source/SpectralSuppressor.h
     Source/SurroundChannelOrder.h
     Source/PluginEditor.h
@@ -104,16 +224,20 @@ target_sources(SmartDucking PRIVATE
 target_include_directories(SmartDucking PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Source")
 
 target_compile_definitions(SmartDucking PUBLIC
-    SMART_DUCKING_ENABLE_DIAGNOSTICS=0
+    SMART_DUCKING_ENABLE_DIAGNOSTICS=$<BOOL:${SMART_DUCKING_ENABLE_DIAGNOSTICS}>
+    SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH=$<BOOL:${SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH}>
+    SMART_DUCKING_USE_PFFFT=$<BOOL:${SMART_DUCKING_USE_PFFFT}>
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0)
 
 target_link_libraries(SmartDucking
     PRIVATE
+        SmartDuckingVectorMath
         juce::juce_audio_utils
         juce::juce_dsp
     PUBLIC
+        ${smart_ducking_fft_link_target}
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
 
@@ -232,10 +356,12 @@ if (SMART_DUCKING_BUILD_TESTS)
         Source/LinkwitzRileyCrossover.h
         Source/PceHistory.h
         Source/PowerOfTwoDelayBuffer.h
+        Source/RealFft.h
         Source/PluginVariant.h
         Source/SidechainClassifier.h
         Source/SidechainEnvelope.h
         Source/SpectralFrameSmoothers.h
+        Source/SpectralVectorMath.h
         Source/SpectralSuppressor.h
         Source/SurroundChannelOrder.h
         Source/PluginEditor.h
@@ -246,7 +372,10 @@ if (SMART_DUCKING_BUILD_TESTS)
     target_include_directories(SmartDuckingTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Source")
 
     target_compile_definitions(SmartDuckingTests PRIVATE
-        SMART_DUCKING_ENABLE_DIAGNOSTICS=0
+        SMART_DUCKING_ENABLE_DIAGNOSTICS=$<BOOL:${SMART_DUCKING_ENABLE_DIAGNOSTICS}>
+        SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH=$<BOOL:${SMART_DUCKING_ENABLE_STEADY_ACTIVE_PATH}>
+        SMART_DUCKING_ENABLE_TEST_HOOKS=1
+        SMART_DUCKING_USE_PFFFT=$<BOOL:${SMART_DUCKING_USE_PFFFT}>
         JucePlugin_Name="Smart Ducking"
         JucePlugin_IsSynth=0
         JucePlugin_Enable_ARA=0
@@ -256,6 +385,8 @@ if (SMART_DUCKING_BUILD_TESTS)
 
     target_link_libraries(SmartDuckingTests PRIVATE
         SmartDuckingResources
+        SmartDuckingVectorMath
+        ${smart_ducking_fft_link_target}
         juce::juce_audio_utils
         juce::juce_dsp
         juce::juce_recommended_config_flags
@@ -277,7 +408,7 @@ if (SMART_DUCKING_BUILD_TESTS)
     target_include_directories(SmartDuckingBenchmark PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/Source")
     target_compile_definitions(SmartDuckingBenchmark PRIVATE
-        SMART_DUCKING_ENABLE_DIAGNOSTICS=0
+        SMART_DUCKING_ENABLE_DIAGNOSTICS=$<BOOL:${SMART_DUCKING_ENABLE_DIAGNOSTICS}>
         JucePlugin_Name="Smart Ducking"
         JucePlugin_IsSynth=0
         JucePlugin_Enable_ARA=0
@@ -286,6 +417,7 @@ if (SMART_DUCKING_BUILD_TESTS)
         JUCE_VST3_CAN_REPLACE_VST2=0)
     target_link_libraries(SmartDuckingBenchmark PRIVATE
         SmartDucking
+        SmartDuckingVectorMath
         juce::juce_audio_utils
         juce::juce_dsp
         juce::juce_recommended_config_flags
