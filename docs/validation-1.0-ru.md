@@ -102,7 +102,18 @@ Audio-thread visualisation capture повышает стоимость акти�
 | Surround QUALITY | 110.31x | 115.03x | +4.3% | -4.1% |
 | Surround NORMAL | 173.21x | 186.60x | +7.7% | -7.2% |
 
-Processor tests сравнивают vector kernels со scalar reference на фактических размерах `513/1025/2049/4097` bins. Последний неполный SIMD-пакет обязан совпадать побитово, kernel-ошибка ограничена `1e-5`, а полный scalar/vector spectral processor проверяется в QUALITY/NORMAL и x1/x2/x4 с maximum/relative-RMS границей `2e-5`. Universal `arm64 + x86_64` Release прошёл processor/factory tests (`2/2`), отдельная scalar-control Release — те же `2/2`, новая arm64 Debug сборка прошла AddressSanitizer и UndefinedBehaviorSanitizer.
+23 августа выполнен дополнительный Windows x64 A/B на Intel Core i7-13700KF. Ниже приведено медианное время обработки блока для scalar reference, baseline xsimd/SSE2 и runtime-dispatched xsimd/AVX2; отрицательная дельта означает снижение CPU time относительно scalar.
+
+| Сценарий | Scalar | xsimd/SSE2 | SSE2 vs scalar | xsimd/AVX2 | AVX2 vs scalar |
+|---|---:|---:|---:|---:|---:|
+| Stereo QUALITY | 80.50 us | 62.90 us | -21.86% | 59.20 us | -26.46% |
+| Stereo NORMAL | 63.00 us | 55.15 us | -12.46% | 50.90 us | -19.21% |
+| Surround QUALITY | 141.20 us | 101.90 us | -27.83% | 94.80 us | -32.86% |
+| Surround NORMAL | 89.60 us | 76.80 us | -14.29% | 70.00 us | -21.88% |
+
+AVX2 дополнительно снижает медианное время относительно SSE2 на 5.9–8.9%. Проверка готового плагина на той же Windows-системе не выявила функциональных изменений.
+
+Processor tests сравнивают vector kernels со scalar reference на фактических размерах `513/1025/2049/4097` bins. Последний неполный SIMD-пакет обязан совпадать побитово, kernel-ошибка ограничена `1e-5`, а полный scalar/vector spectral processor проверяется в QUALITY/NORMAL и x1/x2/x4 с maximum/relative-RMS границей `2e-5`. Universal `arm64 + x86_64` Release прошёл processor/factory tests (`2/2`), отдельная scalar-control Release — те же `2/2`, новая arm64 Debug сборка прошла AddressSanitizer и UndefinedBehaviorSanitizer. Финальный [GitHub Actions run 32533368960](https://github.com/RusAD32/SmartDucking/actions/runs/32533368960) также полностью зелёный на macOS Universal, Windows x64/MSVC с AVX2 runtime dispatch и Linux x64/GCC (`3/3` jobs, в каждом processor и VST3 factory tests).
 
 ### Steady-state block path и Linkwitz–Riley
 
