@@ -10,7 +10,7 @@
 2. [`implementation-plan-ru.md`](implementation-plan-ru.md) — выполненный план 1.0 и критерии релиза;
 3. [`post-1.0-enhancement-plan-ru.md`](post-1.0-enhancement-plan-ru.md) — утверждённое направление make-space/hybrid после стабильного 1.0, не текущая точка реализации;
 4. [`ARCHITECTURE.md`](ARCHITECTURE.md) — снимок текущего DSP signal flow;
-5. [`../README.md`](../README.md) — сборка, identity и краткий статус;
+5. [`developer-guide.md`](developer-guide.md) — сборка, identity и техническое описание;
 6. [`technical-spec-v0.1-ru.md`](technical-spec-v0.1-ru.md) — первоначальная подробная спецификация.
 
 Важно: старая техническая спецификация частично устарела. Для фактического поведения 1.0 источником истины являются код, тесты, `ARCHITECTURE.md` и release validation record. Post-1.0 spectral-направление описано отдельно и не должно преждевременно менять стабильный signal path.
