@@ -38,6 +38,10 @@ On **ROUTING**, the matrix sets how each voice channel reduces each background c
 
 **NORMAL** is the default processing mode; **QUALITY** offers more accurate transient response at higher CPU cost. Stop playback before changing Processing Mode or FFT Resolution. Lookahead helps catch the start of words; the plugin reports latency to the host for compensation.
 
+## AI disclosure
+
+AI tools were used during the development of Smart Ducking.
+
 ## Help and technical details
 
 Report problems through [GitHub Issues](https://github.com/RusAD32/SmartDucking/issues), including your OS, DAW, plugin version, and routing setup.
