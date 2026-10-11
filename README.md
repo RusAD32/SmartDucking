@@ -2,6 +2,8 @@
 
 [Русский](README_RU.md) · English
 
+> **AI disclosure:** AI tools were used during the development of Smart Ducking.
+
 Smart Ducking by RusAD makes room for dialogue in music, ambience, and effects. Place it on the background track and feed the voice into its sidechain: the background becomes quieter while someone speaks and returns smoothly between phrases.
 
 ## Main features
@@ -37,10 +39,6 @@ Restart your DAW or rescan its plugins. You need a VST3 host with external sidec
 On **ROUTING**, the matrix sets how each voice channel reduces each background channel. For 5.1, match the Main, Voice, and Output channel orders to your host. The Surround plugin can also downmix its output to stereo.
 
 **NORMAL** is the default processing mode; **QUALITY** offers more accurate transient response at higher CPU cost. Stop playback before changing Processing Mode or FFT Resolution. Lookahead helps catch the start of words; the plugin reports latency to the host for compensation.
-
-## AI disclosure
-
-AI tools were used during the development of Smart Ducking.
 
 ## Help and technical details
 
